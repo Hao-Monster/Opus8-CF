@@ -49,7 +49,9 @@
 即时创建一次性注册任务，绑定 Node ID、账号别名、域名和传输路径，部署验证完成后自动收回旧凭据。
 管理站“节点管理”也可生成同样的一次性令牌，供单机部署或故障恢复使用；令牌只显示一次。
 P6.10 的发布顺序、Secret 配置和新增账号步骤见
-[`docs/P6.10-OPERATIONS-HARDENING.md`](docs/P6.10-OPERATIONS-HARDENING.md)。
+[`docs/P6.10-OPERATIONS-HARDENING.md`](docs/P6.10-OPERATIONS-HARDENING.md)。新 Cloudflare 账号从 Token、
+Secrets、声明式拓扑到首次 canary 的完整步骤见
+[`docs/NEW-CLOUDFLARE-ACCOUNT-NODE.md`](docs/NEW-CLOUDFLARE-ACCOUNT-NODE.md)。
 
 ## 落地分流运维
 

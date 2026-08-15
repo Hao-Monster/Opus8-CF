@@ -1,5 +1,9 @@
 # Opus8-CF 部署手册
 
+只增加一个新的 Cloudflare 纯节点账号时，请直接使用
+[`NEW-CLOUDFLARE-ACCOUNT-NODE.md`](NEW-CLOUDFLARE-ACCOUNT-NODE.md)；其中包含最小权限 Token、动态 Secret
+映射、拓扑门禁、首次 `provision + canary`、验收和故障处理。不要照搬本文件中主账号的 D1/Pages 权限给纯节点账号。
+
 ## 凭据与执行模型
 
 所有敏感凭据都存放在 **GitHub Actions Secrets**，部署动作经由 GitHub Actions 运行（CI 引用 secrets 执行
@@ -193,8 +197,10 @@ Worker 的 `/api/operations/overview` 与用户活动接口；24 小时趋势和
 
 ## Token 权限要求
 
-各账号对应的 `API_TOKEN` / `API_TOKEN_NUM1` 至少需要：Account → Workers Scripts:Edit、
-Workers KV Storage:Edit、D1:Edit、Cloudflare Pages:Edit；Zone → DNS:Edit（用自定义域时）。
+控制面账号的 Token 需要 Account → Workers Scripts:Edit、Workers KV Storage:Edit、D1:Edit、
+Cloudflare Pages:Edit。纯节点账号不需要 D1 或 Pages 权限，只需要 Account Settings:Read、Workers Scripts:Edit、
+Workers KV Storage:Edit，以及目标 Zone 的 Workers Routes:Edit；详细范围见新增账号教程。若特定账号的 Custom Domain
+API 返回明确 DNS 权限错误，再只对目标 Zone 增加 DNS:Edit。
 控制面账号如需自动配置订阅 WAF 前置规则，还需要可选的 Zone WAF:Edit；缺少该权限时，
 Workers Rate Limiting binding 仍会强制生效。
 其中承载 Zero Trust 管理站的 `API_TOKEN_NUM1` 还需要 Access: Apps and Policies Write。

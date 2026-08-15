@@ -393,7 +393,7 @@ export function Nodes() {
                     ? "provision"
                     : "maintenance") +
                   "'",
-                "# 另行设置 CLOUDFLARE_API_TOKEN、ROOT_DOMAIN、CONTROL_ROOT_DOMAIN、ADMIN_PASSWORD",
+                "# 另行安全设置 CLOUDFLARE_API_TOKEN、ROOT_DOMAIN、CONTROL_ROOT_DOMAIN、CONTROL_AUTOMATION_SECRET",
                 "bash infra/scripts/deploy-node.sh",
               ].join("\n")}
             </pre>
