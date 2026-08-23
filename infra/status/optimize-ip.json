@@ -28,13 +28,13 @@
     "OK candidate=172.67.172.247 node=acc2-n1 vantages=2",
     "OK candidate=104.21.30.138 node=acc2-n1 vantages=2",
     "OK node-candidates node=acc2-n2 count=10",
-    "OK candidate=172.67.172.247 node=acc2-n2 vantages=2",
     "OK candidate=104.21.30.138 node=acc2-n2 vantages=2",
+    "OK candidate=172.67.172.247 node=acc2-n2 vantages=2",
     "STEP push-to-control",
     "OK pushed nodes=4 ips=8 expiresHours=8",
     "STEP verify-subscription",
     "OK subscription-verified nodes=4 ips=8",
     "DONE publishedNodes=4 publishedIps=8"
   ],
-  "finishedAt": "2026-08-23T04:56:27Z"
+  "finishedAt": "2026-08-23T08:53:17Z"
 }
