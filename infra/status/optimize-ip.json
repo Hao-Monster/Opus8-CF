@@ -19,14 +19,14 @@
     "OK cfst-candidates count=8",
     "STEP validate-node-candidates",
     "OK node-candidates node=acc1-n1 count=10",
-    "OK candidate=104.21.52.231 node=acc1-n1 vantages=2",
     "OK candidate=172.67.205.59 node=acc1-n1 vantages=2",
+    "OK candidate=104.21.52.231 node=acc1-n1 vantages=2",
     "OK node-candidates node=acc1-n2 count=10",
     "OK candidate=104.21.52.231 node=acc1-n2 vantages=2",
     "OK candidate=172.67.205.59 node=acc1-n2 vantages=2",
     "OK node-candidates node=acc2-n1 count=10",
-    "OK candidate=172.67.172.247 node=acc2-n1 vantages=2",
     "OK candidate=104.21.30.138 node=acc2-n1 vantages=2",
+    "OK candidate=172.67.172.247 node=acc2-n1 vantages=2",
     "OK node-candidates node=acc2-n2 count=10",
     "OK candidate=104.21.30.138 node=acc2-n2 vantages=2",
     "OK candidate=172.67.172.247 node=acc2-n2 vantages=2",
@@ -36,5 +36,5 @@
     "OK subscription-verified nodes=4 ips=8",
     "DONE publishedNodes=4 publishedIps=8"
   ],
-  "finishedAt": "2026-08-23T08:53:17Z"
+  "finishedAt": "2026-08-23T13:06:56Z"
 }
