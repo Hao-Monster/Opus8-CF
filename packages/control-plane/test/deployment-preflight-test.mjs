@@ -107,9 +107,36 @@ test("node jobs use just-in-time enrollment without the control root", () => {
   assert.match(workflow, /NODE_ENROLLMENT_TOKEN/);
   assert.match(deployNodeScript, /control-automation-request\.mjs/);
   assert.match(workflow, /vars\.WORKER_PLACEMENT_HOST/);
+  assert.match(workflow, /SERVICES_PORT:\s*\$\{\{ vars\.SERVICES_PORT \}\}/);
   assert.doesNotMatch(workflow, /format\([^\n]*SERVICES_IP/);
   assert.match(deployNodeScript, /worker-placement-host\.mjs/);
   assert.match(deployNodeScript, /\[placement\]\\nhost =/);
+  assert.match(deployNodeScript, /ERROR invalid-services-port/);
+  assert.match(deployNodeScript, /ERROR configured-landing-unavailable/);
+  assert.match(deployNodeScript, /rejected=socks5-noauth/);
+  const landingProbe = deployNodeScript.slice(
+    deployNodeScript.indexOf("probe_socks5_port()"),
+    deployNodeScript.indexOf("# 显式端口是部署契约"),
+  );
+  assert.ok(
+    landingProbe.indexOf("outn=$(curl") < landingProbe.indexOf("out=$(curl"),
+    "an unauthenticated SOCKS endpoint must be rejected before accepting credentials",
+  );
+  assert.match(
+    deployNodeScript,
+    /STEP transport-legacy-canary[\s\S]*?for n in \$\(seq 1 3\)/,
+  );
+});
+
+test("health checks tolerate an unavailable optional VPS vantage", () => {
+  const healthcheckScript = readFileSync(
+    `${repositoryRoot}infra/scripts/healthcheck-nodes.sh`,
+    "utf8",
+  );
+  assert.match(
+    healthcheckScript,
+    /\[ "\$REMOTE_READY" = "1" \] \|\| return 0/,
+  );
 });
 
 test("normalizes explicit Worker placement hosts", () => {
