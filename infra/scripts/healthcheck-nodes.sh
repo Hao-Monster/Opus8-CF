@@ -170,9 +170,22 @@ echo "::add-mask::$USER_ID"
 echo "::add-mask::$PROBE_UUID"
 echo "OK probe-user-created"
 
-# User mutations publish cache invalidations to every registered node. A short
-# grace period also covers eventual propagation between Cloudflare locations.
-sleep 8
+# User mutations push cache invalidations to every registered node. When every
+# node acknowledges, a short delay covers Cloudflare propagation. Failed pushes
+# intentionally fall back to the node cache's 60-second TTL, so wait through it
+# before judging a freshly-created credential.
+INVALIDATION_ATTEMPTED="$(printf '%s' "$CREATE_RESPONSE" | jq -er \
+  '.cacheInvalidation.attempted // 0')"
+INVALIDATION_ACKNOWLEDGED="$(printf '%s' "$CREATE_RESPONSE" | jq -er \
+  '.cacheInvalidation.acknowledged // 0')"
+INVALIDATION_FAILED_NODES="$(printf '%s' "$CREATE_RESPONSE" | jq -r \
+  '[.cacheInvalidation.failedNodes[]?] | join(",")')"
+POLICY_GRACE_SECONDS=8
+if [ "$INVALIDATION_ACKNOWLEDGED" -lt "$INVALIDATION_ATTEMPTED" ]; then
+  POLICY_GRACE_SECONDS=65
+fi
+echo "INFO policy-invalidation attempted=$INVALIDATION_ATTEMPTED acknowledged=$INVALIDATION_ACKNOWLEDGED failedNodes=${INVALIDATION_FAILED_NODES:-none} graceSeconds=$POLICY_GRACE_SECONDS"
+sleep "$POLICY_GRACE_SECONDS"
 
 NODES_RESPONSE="$(curl -fsS --max-time 20 "$CONTROL_API/api/nodes" \
   -H "authorization: Bearer $ADMIN_TOKEN")"

@@ -137,6 +137,11 @@ test("health checks tolerate an unavailable optional VPS vantage", () => {
     healthcheckScript,
     /\[ "\$REMOTE_READY" = "1" \] \|\| return 0/,
   );
+  assert.match(
+    healthcheckScript,
+    /INVALIDATION_ACKNOWLEDGED[\s\S]*?INVALIDATION_ATTEMPTED[\s\S]*?POLICY_GRACE_SECONDS=65/,
+  );
+  assert.match(healthcheckScript, /sleep "\$POLICY_GRACE_SECONDS"/);
 });
 
 test("normalizes explicit Worker placement hosts", () => {
