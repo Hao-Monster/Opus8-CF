@@ -3,16 +3,17 @@
   "result": "success",
   "nodeUrl": "https://acc2-n2.openal.uk",
   "markers": [
+    "INFO targeted-placement host=103.79.79.30:40011",
     "STEP compliance-gate",
     "OK compliance-gate",
     "STEP exchange-one-time-enrollment",
-    "OK enrollment-exchanged kind=migrate",
-    "INFO transport path=/ws/85845ad29845b9720308ec96 previous=/ws/85845ad29845b9720308ec96 mode=canary legacy=/ legacyUntil=1787044657698",
+    "OK enrollment-exchanged kind=rotate",
+    "INFO transport path=/ws/85845ad29845b9720308ec96 previous=/ws/85845ad29845b9720308ec96 mode=canary legacy=/ legacyUntil=1787941291004",
     "STEP build",
-    "OK built (OK build: dist/index.js (314357 bytes), patch replaced 961 chars)",
+    "OK built (OK build: dist/index.js (314468 bytes), patch replaced 961 chars)",
     "OK policy-test",
     "STEP probe-landing",
-    "OK landing-port=40008 type=socks5(auth,fast) exit=104.28.160.208",
+    "OK landing-port=40010 type=socks5(auth) exit=104.28.195.186",
     "STEP activate-staged-credential",
     "OK staged-credential-active host=acc2-n2.openal.uk transport=/ws/85845ad29845b9720308ec96",
     "STEP kv",
@@ -31,10 +32,10 @@
     "OK node-tls-http=200",
     "OK uuids-endpoint-count=8",
     "OK landing-bundle-encrypted",
-    "STEP canary-user",
-    "OK maintenance-canary-uses-node-fallback",
+    "STEP canary-credential",
+    "OK deployment-canary-uses-node-fallback",
     "STEP policy-status",
-    "INFO policy-status={\"invalidatedVersion\":1786785347870,\"cachedVersion\":0,\"cachedUuidCount\":0,\"cachedContainsUuid\":false,\"cachedExpiresInMs\":-1786785490330,\"liveOk\":true,\"liveStatus\":200,\"liveVersion\":1786785347870,\"liveUuidCount\":8,\"liveContainsUuid\":false,\"liveError\":\"\"}",
+    "INFO policy-status={\"invalidatedVersion\":1787682017020,\"cachedVersion\":0,\"cachedUuidCount\":0,\"cachedContainsUuid\":false,\"cachedExpiresInMs\":-1787682116508,\"liveOk\":true,\"liveStatus\":200,\"liveVersion\":1787682017020,\"liveUuidCount\":8,\"liveContainsUuid\":false,\"liveError\":\"\"}",
     "STEP vless-smoke",
     "OK vless-ws-auth-egress vantage=github-runner",
     "STEP transport-legacy-canary",
@@ -44,5 +45,5 @@
     "OK previous-credential-retired",
     "DONE url=https://acc2-n2.openal.uk"
   ],
-  "finishedAt": "2026-08-15T09:18:14Z"
+  "finishedAt": "2026-08-25T18:22:00Z"
 }
