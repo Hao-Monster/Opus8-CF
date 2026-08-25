@@ -104,4 +104,8 @@ test("node jobs use just-in-time enrollment without the control root", () => {
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID/);
   assert.match(workflow, /NODE_ENROLLMENT_TOKEN/);
   assert.match(deployNodeScript, /control-automation-request\.mjs/);
+  assert.match(workflow, /vars\.WORKER_PLACEMENT_HOST/);
+  assert.match(workflow, /format\('\{0\}:40011', secrets\.SERVICES_IP\)/);
+  assert.match(deployNodeScript, /invalid-worker-placement-host/);
+  assert.match(deployNodeScript, /\[placement\]\\nhost =/);
 });

@@ -20,6 +20,17 @@
 | `SERVICES_IP` / `SERVICES_USER` / `SERVICES_CODE` | 落地机 SSH 地址/root 用户/SSH 密码 | — |
 | `SOCKS_USER` / `SOCKS_PASSWORD` | Dante 使用的独立 SOCKS5 用户名/密码 | — |
 
+### Worker Targeted Placement
+
+节点部署工作流默认把 `SERVICES_IP:40011` 作为 Workers Targeted Placement 的 TCP 探测目标，使边缘 Worker
+尽量在靠近主落地 VPS 的 Cloudflare 数据中心运行。可以通过 GitHub Actions Repository Variable
+`WORKER_PLACEMENT_HOST` 覆盖，格式必须是 `hostname:port`、`IPv4:port` 或 `[IPv6]:port`。该值不是凭据，
+不要放入 Secret。
+
+当前主落地使用同一 VPS 的 `40010`（WARP）和 `40011`（直出），因此以 `40011` 定位不会改变面板的按域名
+选路。后续若同一 Worker 主要连接多台不同地区的落地机，不应继续固定到单一主机；应改用 Smart Placement，
+或按地区拆分 Worker，并重新比较 Worker 到各落地的 RTT 和持续吞吐。
+
 ### 生产密钥
 
 | Secret | 用途 |

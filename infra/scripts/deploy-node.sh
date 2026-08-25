@@ -9,6 +9,7 @@
 #   NODE_DEPLOY_OPERATION=maintenance|provision（缺省 maintenance）
 #   NODE_TRANSPORT_PATH (可选；缺省时按节点稳定派生)
 #   TRANSPORT_MIGRATION_MODE=canary|strict（缺省 canary，上一条路径保留 72 小时）
+#   WORKER_PLACEMENT_HOST（可选；Targeted Placement 的 host:port）
 #   SERVICES_IP / SOCKS_USER / SOCKS_PASSWORD  (SOCKS5，可缺省 -> 纯 CF 出口)
 #   VPS_HOST / VPS_SSH_USER / VPS_SSH_PASSWORD / VPS_SSH_PORT
 #     (可选，仅用于部署后的第二视角冒烟)
@@ -43,6 +44,25 @@ CUSTOM_URL="https://${CUSTOM_HOST}"
 WORKER_NAME="opus8cf-node-${NODE_ID}${NODE_DEPLOY_SUFFIX}"
 OPUS8_BUILD_ID="${GITHUB_SHA:-manual}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}"
 NODE_DEPLOY_OPERATION="${NODE_DEPLOY_OPERATION:-maintenance}"
+WORKER_PLACEMENT_HOST="${WORKER_PLACEMENT_HOST:-}"
+normalize_worker_placement_host() {
+  WORKER_PLACEMENT_CANDIDATE="$1" node -e '
+    const value=String(process.env.WORKER_PLACEMENT_CANDIDATE||"").trim();
+    const match=value.match(/^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?):([0-9]{1,5})$/);
+    const port=match?Number(match[2]):0;
+    if(!match||port<1||port>65535) process.exit(1);
+    process.stdout.write(value);
+  '
+}
+WORKER_PLACEMENT_CONFIG=""
+if [ -n "$WORKER_PLACEMENT_HOST" ]; then
+  if ! WORKER_PLACEMENT_HOST=$(normalize_worker_placement_host "$WORKER_PLACEMENT_HOST"); then
+    echo "ERROR invalid-worker-placement-host"
+    exit 9
+  fi
+  WORKER_PLACEMENT_CONFIG=$(printf '[placement]\nhost = "%s"\n' "$WORKER_PLACEMENT_HOST")
+  echo "INFO targeted-placement host=$WORKER_PLACEMENT_HOST"
+fi
 case "$NODE_DEPLOY_OPERATION" in
   maintenance) COMPLIANCE_GATE_MODE=node-maintenance ;;
   provision) COMPLIANCE_GATE_MODE=node-provision ;;
@@ -258,6 +278,7 @@ compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+${WORKER_PLACEMENT_CONFIG}
 [vars]
 CONTROL_PLANE_URL = "${CONTROL_PLANE_URL}"
 NODE_ID = "${NODE_ID}"

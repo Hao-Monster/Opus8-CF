@@ -5,6 +5,10 @@ main = "dist/index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# 生产部署由 infra/scripts/deploy-node.sh 注入 Targeted Placement。
+# [placement]
+# host = "203.0.113.10:40011"
+
 # 由 CI/控制面注入的变量（示意）
 [vars]
 CONTROL_PLANE_URL = ""   # 控制面 API 基址，如 https://api.<ROOT_DOMAIN>

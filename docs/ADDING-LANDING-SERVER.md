@@ -555,6 +555,17 @@ unset DIRECT_PASSWORD
   `SERVICES_*` 单落地配置。面板只能保证**健康时首选直出**；若业务要求故障时也绝不允许 WARP，需要增加
   “禁止回退”策略代码，不能只靠优先级实现。
 
+#### 1.9.5 主落地的 Workers Targeted Placement
+
+当多数落地流量集中到同一台 VPS 时，节点部署工作流默认以 `SERVICES_IP:40011` 作为 Workers Targeted
+Placement 的 TCP 探测目标，让 Worker 尽量靠近这台 VPS 执行。`40010` 和 `40011` 位于同一主机，因此该设置
+只影响 Worker 的执行位置，不改变控制面按域名选择 WARP 或直出端口的规则。
+
+更换主落地时，优先在 GitHub Actions Repository Variables 中设置
+`WORKER_PLACEMENT_HOST=<新主机>:<端口>`，无需修改或泄露任何 SOCKS5 凭据。重新部署节点后，应再次采集
+`ss -tinp`，把 Cloudflare 到 Dante 入站连接的 RTT、拥塞窗口和持续吞吐与变更前基线比较。若一个 Worker
+需要同时服务多台不同地区的主要落地，不要把它固定到单一主机；改用 Smart Placement 或按地区拆分 Worker。
+
 ## 2. 当前实现的边界
 
 ### 2.1 支持什么

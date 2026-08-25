@@ -66,6 +66,7 @@ jobs:
       NODE_DEPLOY_SUFFIX: ${{ matrix.deploy_suffix }}
       NODE_DEPLOY_OPERATION: ${{ inputs.operation }}
       TRANSPORT_MIGRATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || '' }}
+      WORKER_PLACEMENT_HOST: ${{ vars.WORKER_PLACEMENT_HOST || format('{0}:40011', secrets.SERVICES_IP) }}
       SERVICES_IP: ${{ secrets.SERVICES_IP }}
       SOCKS_USER: ${{ secrets.SOCKS_USER }}
       SOCKS_PASSWORD: ${{ secrets.SOCKS_PASSWORD }}
