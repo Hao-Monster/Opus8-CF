@@ -8,9 +8,9 @@
     "OK compliance-gate",
     "STEP exchange-one-time-enrollment",
     "OK enrollment-exchanged kind=rotate",
-    "INFO transport path=/ws/9c3efd20351bea7b0629fad8 previous=/ws/9c3efd20351bea7b0629fad8 mode=canary legacy=/ legacyUntil=1787938352028",
+    "INFO transport path=/ws/9c3efd20351bea7b0629fad8 previous=/ws/9c3efd20351bea7b0629fad8 mode=canary legacy=/ legacyUntil=1787940665321",
     "STEP build",
-    "OK built (OK build: dist/index.js (314357 bytes), patch replaced 961 chars)",
+    "OK built (OK build: dist/index.js (314468 bytes), patch replaced 961 chars)",
     "OK policy-test",
     "STEP probe-landing",
     "OK landing-port=40010 type=socks5(auth) exit=104.28.195.186",
@@ -35,7 +35,7 @@
     "STEP canary-credential",
     "OK deployment-canary-uses-node-fallback",
     "STEP policy-status",
-    "INFO policy-status={\"invalidatedVersion\":1787675707285,\"cachedVersion\":0,\"cachedUuidCount\":0,\"cachedContainsUuid\":false,\"cachedExpiresInMs\":-1787679164661,\"liveOk\":true,\"liveStatus\":200,\"liveVersion\":1787678970717,\"liveUuidCount\":8,\"liveContainsUuid\":false,\"liveError\":\"\"}",
+    "INFO policy-status={\"invalidatedVersion\":1787675707285,\"cachedVersion\":0,\"cachedUuidCount\":0,\"cachedContainsUuid\":false,\"cachedExpiresInMs\":-1787681480953,\"liveOk\":true,\"liveStatus\":200,\"liveVersion\":1787681083054,\"liveUuidCount\":8,\"liveContainsUuid\":false,\"liveError\":\"\"}",
     "STEP vless-smoke",
     "OK vless-ws-auth-egress vantage=github-runner",
     "STEP transport-legacy-canary",
@@ -45,5 +45,5 @@
     "OK previous-credential-retired",
     "DONE url=https://acc1-n1-v2.thinderbox.com"
   ],
-  "finishedAt": "2026-08-25T17:32:46Z"
+  "finishedAt": "2026-08-25T18:11:25Z"
 }
