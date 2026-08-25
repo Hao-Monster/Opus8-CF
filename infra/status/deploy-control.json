@@ -57,7 +57,7 @@
     "STEP cors-regression",
     "OK cors-admin-only",
     "STEP ensure-default-landing",
-    "OK smoke-landings count=3",
+    "OK smoke-landings count=5",
     "OK smoke-landing-socks5",
     "OK smoke-unlock-hosts count=63",
     "OK smoke-create-user(D1-write)",
@@ -94,5 +94,5 @@
     "OK smoke-node-cleanup",
     "DONE url=https://api.thinderbox.com"
   ],
-  "finishedAt": "2026-08-15T15:31:08Z"
+  "finishedAt": "2026-08-25T17:09:39Z"
 }
