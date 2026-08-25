@@ -68,6 +68,7 @@ jobs:
       TRANSPORT_MIGRATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || '' }}
       WORKER_PLACEMENT_HOST: ${{ vars.WORKER_PLACEMENT_HOST }}
       SERVICES_IP: ${{ secrets.SERVICES_IP }}
+      SERVICES_PORT: ${{ vars.SERVICES_PORT }}
       SOCKS_USER: ${{ secrets.SOCKS_USER }}
       SOCKS_PASSWORD: ${{ secrets.SOCKS_PASSWORD }}
       VPS_HOST: ${{ secrets.SERVICES_IP }}
