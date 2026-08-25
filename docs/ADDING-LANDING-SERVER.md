@@ -394,6 +394,167 @@ unset SOCKS_PASSWORD
 `40010`**；绝不能填写 WARP 端口 `40008` 或原 socat 端口 `40009`。首次仍按第 1.6 节取消立即启用、创建、
 连通测试、健康后启用。
 
+### 1.9 同一 VPS 增加不走 WARP 的直出 SOCKS5
+
+参考管理面板中“同一 IP、相邻两个端口”的做法，正确实现不是让一个 Dante 按域名决定是否走 WARP，而是
+运行两个相互独立的 Dante 实例：
+
+```text
+公网 :40010 -> opus8-dante.service        -> WARP Local Proxy :40008 -> WARP IP
+公网 :40011 -> opus8-dante-direct.service -> eth0 默认路由          -> VPS 原生 IP
+```
+
+控制面不知道某个 SOCKS5 入口内部是 WARP 还是直出；它只按落地机的负责域名和优先级选择入口。因此必须在
+VPS 上先创建第二个直出服务，再把同一公网 IP、不同端口作为第二台逻辑落地机登记。
+
+当前仓库没有直出版本的部署脚本。不要第二次运行 `deploy-landing.sh`：它会覆盖
+`/etc/danted-opus8.conf` 和 `opus8-dante.service`，且仍会写入 WARP `route` 块。
+
+#### 1.9.1 前置检查
+
+以下示例沿用第 1.8 节的端口。先确认原生出口与 WARP 出口不同、`40011` 空闲：
+
+```bash
+DIRECT_IP="$(env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy \
+  -u HTTP_PROXY -u http_proxy curl -4fsS --noproxy '*' https://api.ipify.org)"
+WARP_IP="$(curl -4fsS --proxy socks5h://127.0.0.1:40008 https://api.ipify.org)"
+test -n "$DIRECT_IP"
+test "$DIRECT_IP" != "$WARP_IP"
+! ss -H -lnt 'sport = :40011' | grep -q .
+ip -o route show default
+```
+
+如果两个出口 IP 相同，说明 WARP 不在预期的 Local Proxy 隔离模式，不能据此创建直出实例。
+
+#### 1.9.2 创建独立配置和服务
+
+直出配置应使用新的文件 `/etc/danted-opus8-direct.conf`、新的端口 `40011` 和默认网卡。它与 WARP 配置
+最大的区别是**完全没有 `route { ... via: 127.0.0.1 ... }` 块**：
+
+```text
+logoutput: syslog
+internal: 0.0.0.0 port = 40011
+external: eth0
+
+clientmethod: none
+socksmethod: username
+
+user.privileged: root
+user.notprivileged: nobody
+
+timeout.negotiate: 30
+timeout.connect: 30
+timeout.io: 0
+
+client pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+  log: connect disconnect error
+}
+
+socks pass {
+  from: 0.0.0.0/0 to: 0.0.0.0/0
+  command: connect
+  protocol: tcp
+  proxyprotocol: socks_v5
+  socksmethod: username
+  user: <SOCKS_USER>
+  log: connect disconnect error
+}
+
+socks pass {
+  from: 0.0.0.0/0 to: ::/0
+  command: connect
+  protocol: tcp
+  proxyprotocol: socks_v5
+  socksmethod: username
+  user: <SOCKS_USER>
+  log: connect disconnect error
+}
+```
+
+可以复用 WARP Dante 的系统账号和密码，但应先使用该凭据通过 `40010` 完成一次认证测试，不能再次运行
+`chpasswd`，否则会同时改变两个入口的密码。需要独立轮换能力时，创建新的非 root 系统账号，并在直出配置中
+只允许该账号。
+
+专用 systemd 单元 `/etc/systemd/system/opus8-dante-direct.service`：
+
+```ini
+[Unit]
+Description=Opus8 authenticated Dante direct VPS egress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/danted -f /etc/danted-opus8-direct.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+```
+
+配置文件必须为 `root:root 0600`，单元文件为 `root:root 0644`。启动前用
+`danted -V -f /etc/danted-opus8-direct.conf` 校验语法，再执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now opus8-dante-direct.service
+systemctl is-active --quiet opus8-dante-direct.service
+systemctl is-enabled --quiet opus8-dante-direct.service
+ss -H -lntup | grep ':40011'
+```
+
+#### 1.9.3 验证认证与真实出口
+
+```bash
+read -r -p 'Direct SOCKS username: ' DIRECT_USER
+read -r -s -p 'Direct SOCKS password: ' DIRECT_PASSWORD
+echo
+
+DIRECT_PROXY_IP="$(curl -4fsS --max-time 20 \
+  --proxy socks5h://127.0.0.1:40011 \
+  --proxy-user "${DIRECT_USER}:${DIRECT_PASSWORD}" \
+  https://api.ipify.org)"
+test "$DIRECT_PROXY_IP" = "$DIRECT_IP"
+test "$DIRECT_PROXY_IP" != "$WARP_IP"
+
+! curl -4fsS --max-time 8 \
+  --proxy socks5h://127.0.0.1:40011 https://api.ipify.org
+! curl -4fsS --max-time 8 \
+  --proxy socks5h://127.0.0.1:40011 \
+  --proxy-user "${DIRECT_USER}:${DIRECT_PASSWORD}x" https://api.ipify.org
+unset DIRECT_PASSWORD
+```
+
+只有正确认证的 `40011` 出口等于 VPS 原生 IP、并且空凭据和错误密码均失败时，才开放/登记该端口。还需从
+独立公网网络验证 `VPS_IP:40011` 可达。
+
+#### 1.9.4 面板中的两条记录
+
+同一 VPS 应登记为两个逻辑落地机：
+
+| 记录 | 地址 | 端口 | 负责域名 | 真实出口 |
+|---|---|---:|---|---|
+| `区域-WARP` | 同一 VPS 公网 IP | `40010` | 只填写需要 WARP 的域名 | WARP IP |
+| `区域-direct` | 同一 VPS 公网 IP | `40011` | 只填写需要 VPS 原生出口的域名 | VPS 原生 IP |
+
+两条记录首次都应取消“创建后立即启用”，创建后分别执行“连通测试”，健康后再启用。直出域名还必须存在于
+“落地分流”的全局域名清单中，测试用户也必须开启落地解锁，否则请求会使用 Cloudflare 边缘的默认直连，
+不会进入 VPS 的 `40011`。
+
+候选落地先按优先级从小到大排序，再筛选“负责域名匹配或负责域名留空”的记录。因此：
+
+- 最清晰的配置是两条记录都填写互不重叠的明确域名；此时优先级不会造成串线。
+- 同一域名同时出现在两条记录时，数字较小的先尝试，另一条成为失败回退。
+- 任何“负责域名留空”的落地都会成为所有落地域名的候选。若 WARP 记录留空且优先级更高，直出域名会先
+  走 WARP。
+- 即使正常路径选中直出，候选失败后当前边缘实现还可能尝试其他匹配/空白落地，最后再尝试旧
+  `SERVICES_*` 单落地配置。面板只能保证**健康时首选直出**；若业务要求故障时也绝不允许 WARP，需要增加
+  “禁止回退”策略代码，不能只靠优先级实现。
+
 ## 2. 当前实现的边界
 
 ### 2.1 支持什么
