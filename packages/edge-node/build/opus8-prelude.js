@@ -642,11 +642,13 @@ async function OPUS8_getActiveState(env, userID, ctx) {
       if (OPUS8_policyVersion(rawState) < invalidatedVersion) return fallback;
       const state = await OPUS8_normalizeState(rawState, userID, true, env);
       if (env.KV) {
-        await env.KV.put(
-          KVKEY,
-          JSON.stringify({ raw: rawState, exp: Date.now() + state.ttl * 1000 }),
-          { expirationTtl: Math.max(60, state.ttl * 4) },
-        );
+        try {
+          await env.KV.put(
+            KVKEY,
+            JSON.stringify({ raw: rawState, exp: Date.now() + state.ttl * 1000 }),
+            { expirationTtl: Math.max(60, state.ttl * 4) },
+          );
+        } catch (_) { /* cache writes are best-effort; keep the valid live policy */ }
       }
       return state;
     }

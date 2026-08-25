@@ -357,6 +357,16 @@ const controlEnv = {
   CONTROL_PLANE_URL: "https://control.example",
   OPUS8_BUILD_ID: "test-build",
 };
+const liveStateWithFailedCacheWrite = await OPUS8_getActiveState({
+  ...controlEnv,
+  KV: {
+    async get() { return null; },
+    async put() { throw new Error("simulated KV write failure"); },
+  },
+}, "local-admin", {});
+if (!liveStateWithFailedCacheWrite.uuids.includes("status-user")) {
+  throw new Error("a KV write failure must not discard a valid live policy");
+}
 const buildResponse = await OPUS8_handleControlRequest(new Request(
   "https://node.example/__opus8/build",
 ), controlEnv);
