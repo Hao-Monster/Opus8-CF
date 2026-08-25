@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import {
   formatControlDeployErrors,
   validateControlDeployEnvironment
 } from "../../../infra/scripts/control-deploy-preflight.mjs";
+import { normalizeWorkerPlacementHost } from "../../../infra/scripts/worker-placement-host.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -104,4 +106,59 @@ test("node jobs use just-in-time enrollment without the control root", () => {
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID/);
   assert.match(workflow, /NODE_ENROLLMENT_TOKEN/);
   assert.match(deployNodeScript, /control-automation-request\.mjs/);
+  assert.match(workflow, /vars\.WORKER_PLACEMENT_HOST/);
+  assert.doesNotMatch(workflow, /format\([^\n]*SERVICES_IP/);
+  assert.match(deployNodeScript, /worker-placement-host\.mjs/);
+  assert.match(deployNodeScript, /\[placement\]\\nhost =/);
+});
+
+test("normalizes explicit Worker placement hosts", () => {
+  assert.equal(normalizeWorkerPlacementHost(""), "");
+  assert.equal(
+    normalizeWorkerPlacementHost(" 203.0.113.10:40011 "),
+    "203.0.113.10:40011",
+  );
+  assert.equal(
+    normalizeWorkerPlacementHost("VPS.Example.COM:443"),
+    "vps.example.com:443",
+  );
+  assert.equal(
+    normalizeWorkerPlacementHost("[2001:db8::10]:40011"),
+    "[2001:db8::10]:40011",
+  );
+});
+
+test("rejects unsafe or malformed Worker placement hosts", () => {
+  for (const value of [
+    ":40011",
+    "203.0.113.10:0",
+    "203.0.113.10:65536",
+    "999.999.999.999:40011",
+    "bad..example.com:40011",
+    "2001:db8::10:40011",
+    "vps.example.com:40011\n[vars]",
+  ]) {
+    assert.throws(() => normalizeWorkerPlacementHost(value));
+  }
+});
+
+test("placement host CLI is optional and fails closed without leaking input", () => {
+  const cli = `${repositoryRoot}infra/scripts/worker-placement-host.mjs`;
+  const absent = spawnSync(process.execPath, [cli], {
+    encoding: "utf8",
+    env: { ...process.env, WORKER_PLACEMENT_HOST: "" },
+  });
+  assert.equal(absent.status, 0);
+  assert.equal(absent.stdout, "");
+  assert.equal(absent.stderr, "");
+
+  const unsafe = "vps.example.com:40011\n[vars]";
+  const rejected = spawnSync(process.execPath, [cli], {
+    encoding: "utf8",
+    env: { ...process.env, WORKER_PLACEMENT_HOST: unsafe },
+  });
+  assert.equal(rejected.status, 9);
+  assert.equal(rejected.stdout, "");
+  assert.match(rejected.stderr, /ERROR invalid-worker-placement-host/);
+  assert.doesNotMatch(rejected.stderr, /vps\.example\.com|\[vars\]/);
 });
