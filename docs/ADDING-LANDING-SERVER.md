@@ -12,7 +12,7 @@
 
 `infra/scripts/deploy-landing.sh` 的实际行为是：
 
-- **会做**：检查 WARP Local Proxy、安装 Dante、创建 SOCKS5 系统用户、写 Dante 配置、创建 systemd
+- **会做**：检查 WARP Local Proxy、尝试通过 APT 安装 Dante、创建 SOCKS5 系统用户、写 Dante 配置、创建 systemd
   服务、把 Dante 出站链到 WARP、验证正确/错误/空凭据。
 - **不会做**：安装 `cloudflare-warp` 软件包、注册 WARP、创建 Zero Trust Service Token、在管理面板新增
   落地机记录。
@@ -29,12 +29,17 @@
   5. 启用并做业务验收
 ```
 
-不需要先手工安装 Dante。即使先执行 `apt install dante-server`，`deploy-landing.sh` 后面仍会安装/停用系统
-默认 `danted.service`，并用项目自己的 `/etc/danted-opus8.conf` 和 `opus8-dante.service` 覆盖运行方式。
+在软件源包含 `dante-server` 的系统上不需要先手工安装 Dante。脚本仍会安装/停用系统默认
+`danted.service`，并用项目自己的 `/etc/danted-opus8.conf` 和 `opus8-dante.service` 运行。**Debian 13
+（trixie）官方仓库没有 `dante-server`**，必须先按第 1.8 节安装经过校验的 1.4.4 包；不要退回存在已知
+访问控制漏洞的 1.4.2，也不要为了一个包把整台稳定系统混入 sid/forky 软件源。
 
 `.github/workflows/deploy-landing.yml` 也不会安装 WARP；`deploy-all` 只多做 Zero Trust API 探测，随后仍然
 要求 VPS 上的 WARP Local Proxy 已经可用。`infra/scripts/enroll-zero-trust.sh` 能登记**已经安装**的 WARP
 客户端，但同样不负责安装软件包。
+
+如果 VPS 已经运行 Remnawave Docker、宿主机 WARP 和 `socat`，不要套用新 VPS 的默认端口。先直接跳到
+第 1.8 节；该场景需要保留原有端口，并为 Dante 选择新的端口。
 
 ### 1.2 准备一台新 VPS
 
@@ -118,6 +123,9 @@ ss -H -lntp | grep ':40000'
 ```
 
 ### 1.4 第二步：复制并运行 `deploy-landing.sh`
+
+本节只适用于软件源可直接安装 Dante、且目标端口没有既有服务的新 VPS。Debian 13 或已有
+Remnawave/WARP/socat 的主机改用第 1.8 节，不要执行本节的默认 `40008/40000` 命令。
 
 在你的 Windows 工作站 PowerShell 中执行：
 
@@ -246,6 +254,146 @@ if ($LASTEXITCODE -eq 0) {
 也不需要修改 `infra/accounts.json` 或重新运行 `deploy-nodes`。多落地运行配置来自控制面的 D1，
 会以加密配置包动态下发。
 
+### 1.8 已有 Remnawave Docker + 宿主机 WARP + socat 的共存步骤
+
+本节是 2026-08-25 在 Debian 13、Remnawave 容器使用 host network 的主机上实际执行并通过的流程。已有链路
+必须原样保留，新增 Dante 使用独立端口：
+
+```text
+Remnawave 容器
+  -> 宿主机 0.0.0.0:40009（warp-socat.service）
+  -> 127.0.0.1:40008（warp-svc Local Proxy）
+  -> WARP 出口
+
+Opus8-CF 控制面/边缘节点
+  -> 公网 0.0.0.0:40010（opus8-dante.service，用户名/密码）
+  -> 127.0.0.1:40008（同一个 warp-svc Local Proxy）
+  -> WARP 出口
+```
+
+这里 `40008` 属于 WARP，`40009` 属于原 Remnawave `socat`，新增 Dante 只能使用另一个空闲端口，例如
+`40010`。不要把 Dante 配到 `40008`，也不要停止、禁用或覆盖 `warp-socat.service`。
+
+#### 1.8.1 恢复并验收原链路
+
+如果曾执行 `warp-cli proxy port 40000`，先恢复原 Local Proxy 端口：
+
+```bash
+sudo warp-cli --accept-tos proxy port 40008
+WARP_EXIT="$(curl -4fsS --max-time 12 --proxy socks5h://127.0.0.1:40008 https://api.ipify.org)"
+SOCAT_EXIT="$(curl -4fsS --max-time 12 --proxy socks5h://127.0.0.1:40009 https://api.ipify.org)"
+test "$WARP_EXIT" = "$SOCAT_EXIT"
+systemctl is-active --quiet warp-svc.service
+systemctl is-active --quiet warp-socat.service
+ss -H -lntup | grep -E ':(40008|40009)'
+```
+
+验收必须同时看到 `warp-svc` 监听 `127.0.0.1:40008`、`socat` 监听 `0.0.0.0:40009`，且两个代理查询到
+相同的 WARP 出口。任一项不满足都不要继续。
+
+失败过的旧脚本可能留下 `opus8-legacy-socat.service`。先用 `systemctl cat` 确认它确实是失败脚本创建的
+`TCP-LISTEN:<DANTE_PORT> -> 127.0.0.1:<WARP_PROXY_PORT>`，再只清理这个单元并保留备份：
+
+```bash
+sudo systemctl cat opus8-legacy-socat.service
+LEGACY_BACKUP="/root/opus8-legacy-socat.service.failed.$(date +%Y%m%d%H%M%S).bak"
+sudo systemctl disable --now opus8-legacy-socat.service || true
+if sudo test -f /etc/systemd/system/opus8-legacy-socat.service; then
+  sudo mv /etc/systemd/system/opus8-legacy-socat.service "$LEGACY_BACKUP"
+fi
+sudo systemctl daemon-reload
+```
+
+#### 1.8.2 Debian 13 安装受支持的 Dante 1.4.4
+
+Debian 13 的 trixie 仓库没有 `dante-server`。bookworm 的 1.4.2 受 CVE-2024-54662 影响；本次实测使用
+Debian 官方池中的 `1.4.4+dfsg2-1+b1`，并在安装前校验 Debian 官方公布的 SHA-256。版本发生变化时，应从
+文末 Debian 官方包页面取得新文件名和校验值，不可跳过校验：
+
+```bash
+set -euo pipefail
+DANTE_DEB='/tmp/dante-server_1.4.4+dfsg2-1+b1_amd64.deb'
+DANTE_URL='https://deb.debian.org/debian/pool/main/d/dante/dante-server_1.4.4+dfsg2-1+b1_amd64.deb'
+DANTE_SHA256='cba26758e81da9e3771b16e7df571f7d40aa82ed973196a8ed14680f35baea77'
+
+curl --proto '=https' --tlsv1.2 -fL --retry 3 -o "$DANTE_DEB" "$DANTE_URL"
+printf '%s  %s\n' "$DANTE_SHA256" "$DANTE_DEB" | sha256sum -c -
+test "$(dpkg-deb -f "$DANTE_DEB" Package)" = 'dante-server'
+test "$(dpkg-deb -f "$DANTE_DEB" Architecture)" = 'amd64'
+sudo apt-get -s install "$DANTE_DEB"
+```
+
+模拟结果应为 `0 upgraded, 1 newly installed, 0 to remove`。确认无删除、降级或额外跨发行版依赖后，屏蔽
+发行版默认服务再安装，避免安装过程中短暂启动未经项目配置的 Dante：
+
+```bash
+cleanup_default_danted() {
+  sudo systemctl disable --now danted.service >/dev/null 2>&1 || true
+  sudo systemctl unmask danted.service >/dev/null 2>&1 || true
+}
+trap cleanup_default_danted EXIT
+sudo systemctl mask danted.service
+sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$DANTE_DEB"
+cleanup_default_danted
+trap - EXIT
+test "$(dpkg-query -W -f='${Version}' dante-server)" = '1.4.4+dfsg2-1+b1'
+! systemctl is-active --quiet danted.service
+```
+
+安装时出现 `Failed to preset unit ... masked` 是主动屏蔽默认服务的预期结果；最终必须是
+`danted.service=inactive/disabled`。
+
+#### 1.8.3 用独立端口部署项目 Dante
+
+确认 `40010` 空闲后再运行脚本。当前脚本在任意失败时都会尝试创建一个无认证的
+`opus8-legacy-socat.service`，因此共存场景必须使用下面的失败清理包装；不能直接裸跑脚本：
+
+```bash
+! ss -H -lnt 'sport = :40010' | grep -q .
+read -r -p 'SOCKS username: ' SOCKS_USER
+read -r -s -p 'SOCKS password: ' SOCKS_PASSWORD
+echo
+export SOCKS_USER SOCKS_PASSWORD
+
+if ! sudo --preserve-env=SOCKS_USER,SOCKS_PASSWORD env \
+  DANTE_PORT=40010 WARP_PROXY_PORT=40008 /tmp/deploy-landing.sh; then
+  sudo systemctl disable --now opus8-legacy-socat.service || true
+  if sudo test -f /etc/systemd/system/opus8-legacy-socat.service; then
+    sudo mv /etc/systemd/system/opus8-legacy-socat.service \
+      "/root/opus8-legacy-socat.service.deploy-failure.$(date +%Y%m%d%H%M%S).bak"
+  fi
+  sudo systemctl daemon-reload
+  unset SOCKS_PASSWORD
+  exit 1
+fi
+```
+
+成功后执行完整验收：
+
+```bash
+systemctl is-active --quiet opus8-dante.service
+systemctl is-enabled --quiet opus8-dante.service
+systemctl is-active --quiet warp-svc.service
+systemctl is-active --quiet warp-socat.service
+
+WARP_EXIT="$(curl -4fsS --max-time 15 --proxy socks5h://127.0.0.1:40008 https://api.ipify.org)"
+SOCAT_EXIT="$(curl -4fsS --max-time 15 --proxy socks5h://127.0.0.1:40009 https://api.ipify.org)"
+DANTE_EXIT="$(curl -4fsS --max-time 20 --proxy socks5h://127.0.0.1:40010 \
+  --proxy-user "${SOCKS_USER}:${SOCKS_PASSWORD}" https://api.ipify.org)"
+test "$WARP_EXIT" = "$SOCAT_EXIT"
+test "$WARP_EXIT" = "$DANTE_EXIT"
+! curl -4fsS --max-time 8 --proxy socks5h://127.0.0.1:40010 https://api.ipify.org
+! curl -4fsS --max-time 8 --proxy socks5h://127.0.0.1:40010 \
+  --proxy-user "${SOCKS_USER}:${SOCKS_PASSWORD}x" https://api.ipify.org
+ss -H -lntup | grep -E ':(40008|40009|40010)'
+unset SOCKS_PASSWORD
+```
+
+最终监听应为：WARP `127.0.0.1:40008`、原 socat `0.0.0.0:40009`、Dante
+`0.0.0.0:40010`。从独立公网网络确认 `40010/tcp` 可达后，在面板填写 VPS 公网 IP 和 **端口
+`40010`**；绝不能填写 WARP 端口 `40008` 或原 socat 端口 `40009`。首次仍按第 1.6 节取消立即启用、创建、
+连通测试、健康后启用。
+
 ## 2. 当前实现的边界
 
 ### 2.1 支持什么
@@ -303,8 +451,9 @@ TLS-wrapped SOCKS5 或其他受保护传输，不能把高强度密码等同于�
 ### 4.1 主机要求
 
 仓库自带 `infra/scripts/deploy-landing.sh` 使用 `apt-get`、`systemd`、`ip`、`ss` 和 Dante，适合受支持的
-Debian/Ubuntu 主机。使用仓库同款 Cloudflare One Client 时，应从官方支持矩阵选择仍在支持期内的 OS 和
-稳定/LTS 客户端，不要把某个历史版本号写死在自己的运维脚本中。
+Debian/Ubuntu 主机，但前提是系统软件源提供 `dante-server`，或已按第 1.8.2 节安全预装。Debian 13 不满足
+前一个条件。使用仓库同款 Cloudflare One Client 时，应从官方支持矩阵选择仍在支持期内的 OS 和稳定/LTS
+客户端；固定 Dante 版本时则必须同时保留官方校验值和定期更新检查。
 
 新主机至少应满足：
 
@@ -438,7 +587,7 @@ rm -f /tmp/deploy-landing.sh
 
 脚本会：
 
-- 安装 `dante-server`、`curl` 和 CA 证书；
+- 通过 APT 安装或确认已安装 `dante-server`、`curl` 和 CA 证书；
 - 创建非 root 系统用户并设置密码；
 - 写入 `/etc/danted-opus8.conf`，权限 `0600`；
 - 创建并启动 `opus8-dante.service`；
@@ -446,8 +595,10 @@ rm -f /tmp/deploy-landing.sh
 - 把 IPv4/IPv6 目标继续路由到 `127.0.0.1:40000`；
 - 验证认证出口与 WARP 出口一致，同时拒绝无凭据和错误密码。
 
-脚本的回滚逻辑主要为旧主落地的 `socat` 转发器设计。对一台全新的附加主机，不能把该回滚视为完整的
-系统快照；首次执行前仍应创建 VPS 快照或至少备份现有 systemd/Dante 配置。
+脚本的回滚逻辑主要为旧主落地的 `socat` 转发器设计。当前实现有两个必须知晓的限制：识别现有 socat 时
+正则要求命令行以 `socat` 开头，而 systemd 实际常为 `/usr/bin/socat`；任意失败又会无条件创建
+`opus8-legacy-socat.service`。因此已有 socat 的共存主机必须使用第 1.8 节的独立端口和失败清理包装。对新主机
+也不能把该回滚视为完整系统快照；首次执行前仍应创建 VPS 快照或至少备份现有 systemd/Dante 配置。
 
 ### 6.3 服务端验收
 
@@ -697,6 +848,9 @@ journalctl -u warp-svc.service --since '30 minutes ago' --no-pager
 - [无头 Linux 部署 Cloudflare One Client](https://developers.cloudflare.com/cloudflare-one/tutorials/deploy-client-headless-linux/)
 - [Cloudflare One Client Local Proxy 模式](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/modes/)
 - [Cloudflare Self-Serve Subscription Agreement](https://www.cloudflare.com/terms/)
+- [Debian `dante-server` 包索引](https://packages.debian.org/search?keywords=dante-server)
+- [Debian `dante-server` 1.4.4 amd64 下载与 SHA-256](https://packages.debian.org/sid/amd64/dante-server/download)
+- [Debian Dante 安全跟踪（CVE-2024-54662）](https://security-tracker.debian.org/tracker/source-package/dante)
 
 Cloudflare 当前 Self-Serve 条款 2.2.1(j) 对 VPN 或类似代理服务有明确限制，除非获得书面许可。技术上能连接
 不代表业务用途已获授权；增加落地机前应核对仓库合规状态和实际合同。
