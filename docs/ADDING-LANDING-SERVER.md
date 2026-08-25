@@ -6,18 +6,240 @@
 >
 > 本文中的“落地机”指控制面登记的 **SOCKS5 TCP 出口**，不是新增 Cloudflare Worker 节点。
 
-## 1. 先看结论
+## 1. 可直接执行的新增步骤
 
-增加第二台及后续落地机时，推荐采用下面的流程：
+### 1.1 先确认脚本到底做什么
 
-1. 在新 VPS 上独立准备一套带用户名/密码认证的 SOCKS5；如需与现有架构一致，则使用“Dante → 本机 Cloudflare One Client Local Proxy”的链路。
-2. 从 VPS 本机和公网分别验证出口，并确认不带凭据、错误凭据一定失败。
-3. 在管理站“落地机”页面先以**停用状态**登记，执行控制面连通测试。
-4. 按职责填写域名和唯一优先级，再启用；节点一般在 60 秒内取得新配置，不需要重新部署。
-5. 用已开启“AI 落地解锁”的隔离测试用户做端到端验证。
-6. 保留旧落地作为回滚，观察至少一个完整业务高峰后再调整优先级或下线旧机。
+`infra/scripts/deploy-landing.sh` 的实际行为是：
 
-不要为了增加第二台落地机直接覆盖 GitHub Secrets 中的 `SERVICES_IP`、`SERVICES_USER`、
+- **会做**：检查 WARP Local Proxy、安装 Dante、创建 SOCKS5 系统用户、写 Dante 配置、创建 systemd
+  服务、把 Dante 出站链到 WARP、验证正确/错误/空凭据。
+- **不会做**：安装 `cloudflare-warp` 软件包、注册 WARP、创建 Zero Trust Service Token、在管理面板新增
+  落地机记录。
+
+脚本第一个有效步骤就是通过 `127.0.0.1:40000` 测试 WARP。该测试不通过时，它会在安装 Dante 之前退出。
+因此本项目的正确执行顺序是：
+
+```text
+新 VPS
+  1. 安装并连通 WARP Local Proxy（127.0.0.1:40000）
+  2. 运行 deploy-landing.sh（自动安装并配置 Dante，公网端口 40008）
+  3. 从公网验证 SOCKS5
+  4. 去管理面板登记并测试
+  5. 启用并做业务验收
+```
+
+不需要先手工安装 Dante。即使先执行 `apt install dante-server`，`deploy-landing.sh` 后面仍会安装/停用系统
+默认 `danted.service`，并用项目自己的 `/etc/danted-opus8.conf` 和 `opus8-dante.service` 覆盖运行方式。
+
+`.github/workflows/deploy-landing.yml` 也不会安装 WARP；`deploy-all` 只多做 Zero Trust API 探测，随后仍然
+要求 VPS 上的 WARP Local Proxy 已经可用。`infra/scripts/enroll-zero-trust.sh` 能登记**已经安装**的 WARP
+客户端，但同样不负责安装软件包。
+
+### 1.2 准备一台新 VPS
+
+以下命令以受支持的 Debian/Ubuntu、systemd 和具有 sudo 权限的 SSH 用户为前提。先记录自己的值：
+
+```text
+VPS_IP=<新落地公网 IP>
+SSH_PORT=<SSH 端口，通常 22>
+SSH_USER=<root 或免密 sudo 用户>
+SOCKS_USER=<新的 SOCKS5 用户名，例如 opus8_us_02>
+SOCKS_PASSWORD=<密码管理器生成的独立随机密码>
+SOCKS_PORT=40008
+WARP_PROXY_PORT=40000
+```
+
+在云厂商防火墙中只保留必要端口：SSH 端口用于管理，`40008/tcp` 用于 SOCKS5。不要开放 `40000`，它是
+VPS 本机的 WARP Local Proxy 端口。
+
+先把实际值填入本机 PowerShell，然后登录新 VPS：
+
+```powershell
+$VpsIp = '203.0.113.10'
+$SshPort = 22
+$SshUser = 'root'
+ssh -p $SshPort "${SshUser}@${VpsIp}"
+```
+
+### 1.3 第一步：安装并启动 WARP Local Proxy
+
+在新 VPS 上执行。软件源命令来自 Cloudflare 官方 Linux 安装方式；如果官方后续更新了仓库地址或支持系统，
+以本文第 13 节链接的官方页面为准。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates gpg
+
+curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+  | sudo gpg --yes --dearmor \
+      --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+
+. /etc/os-release
+test -n "${VERSION_CODENAME:-}"
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${VERSION_CODENAME} main" \
+  | sudo tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+
+sudo apt-get update
+sudo apt-get install -y cloudflare-warp
+sudo systemctl enable --now warp-svc.service
+```
+
+如果这是全新主机且使用普通 WARP 注册，继续执行：
+
+```bash
+sudo warp-cli --accept-tos registration new
+sudo warp-cli --accept-tos mode proxy
+sudo warp-cli --accept-tos proxy port 40000
+sudo warp-cli --accept-tos connect
+```
+
+如果要接入自己的 Cloudflare Zero Trust，不要先创建普通注册再盲目删除。应按官方无头 Linux 部署方式准备
+Service Token 和 Device enrollment permission，或在客户端安装完成后使用仓库的 Zero Trust 登记脚本。
+无论用哪种注册方式，最终验收标准都是 `WarpProxy on port 40000` 且下面的代理请求成功。
+
+检查 WARP：
+
+```bash
+sudo warp-cli --accept-tos status
+sudo warp-cli --accept-tos settings
+systemctl is-active warp-svc.service
+
+curl -4fsS --max-time 20 \
+  --proxy socks5h://127.0.0.1:40000 \
+  https://api.ipify.org
+```
+
+最后一条必须输出公网 IP。失败时不要继续安装 Dante，先用下面的命令检查：
+
+```bash
+journalctl -u warp-svc.service --since '15 minutes ago' --no-pager
+ss -H -lntp | grep ':40000'
+```
+
+### 1.4 第二步：复制并运行 `deploy-landing.sh`
+
+在你的 Windows 工作站 PowerShell 中执行：
+
+```powershell
+Set-Location E:\CodeWorkstation\edgetunnel-main-2\Opus8-CF
+$VpsIp = '203.0.113.10'
+$SshPort = 22
+$SshUser = 'root'
+
+scp -P $SshPort .\infra\scripts\deploy-landing.sh `
+  "${SshUser}@${VpsIp}:/tmp/deploy-landing.sh"
+ssh -p $SshPort "${SshUser}@${VpsIp}"
+```
+
+进入 VPS 后执行。用户名必须匹配 `[a-z_][a-z0-9_-]{0,30}`，不能使用 `root`：
+
+```bash
+chmod 0700 /tmp/deploy-landing.sh
+read -r -p 'SOCKS username: ' SOCKS_USER
+read -r -s -p 'SOCKS password: ' SOCKS_PASSWORD
+echo
+export SOCKS_USER SOCKS_PASSWORD
+
+sudo --preserve-env=SOCKS_USER,SOCKS_PASSWORD env \
+  DANTE_PORT=40008 \
+  WARP_PROXY_PORT=40000 \
+  /tmp/deploy-landing.sh
+
+unset SOCKS_PASSWORD
+rm -f /tmp/deploy-landing.sh
+```
+
+如果当前就是 root，可把 `sudo --preserve-env=SOCKS_USER,SOCKS_PASSWORD env` 换成 `env`。
+
+正常结束时最后会看到：
+
+```text
+OK warp-local-proxy
+OK dante-installed
+OK socks-account-ready
+OK dante-active
+OK auth-required-and-warp-egress
+DONE dante_port=40008 warp_proxy_port=40000
+```
+
+检查 Dante：
+
+```bash
+systemctl is-enabled opus8-dante.service
+systemctl is-active opus8-dante.service
+ss -H -lntp | grep ':40008'
+journalctl -u opus8-dante.service --no-pager -n 50
+```
+
+### 1.5 第三步：从公网验证 SOCKS5
+
+确保云防火墙已开放 `40008/tcp`。回到 Windows PowerShell，使用刚才保存到密码管理器的凭据：
+
+```powershell
+$LandingIp = '<VPS_IP>'
+$LandingPort = 40008
+$SocksUser = '<SOCKS_USER>'
+$SocksPassword = Read-Host 'SOCKS password'
+
+curl.exe -4 --fail --silent --show-error --max-time 25 `
+  --proxy "socks5h://${LandingIp}:${LandingPort}" `
+  --proxy-user "${SocksUser}:${SocksPassword}" `
+  https://api.ipify.org
+```
+
+命令必须输出落地/WARP 公网 IP。再确认未提供凭据时失败：
+
+```powershell
+curl.exe -4 --fail --silent --show-error --max-time 8 `
+  --proxy "socks5h://${LandingIp}:${LandingPort}" `
+  https://api.ipify.org
+
+if ($LASTEXITCODE -eq 0) {
+  throw 'SOCKS5 错误：未认证访问成功，禁止登记到面板'
+}
+```
+
+测试完成后执行 `Remove-Variable SocksPassword`。不要把真实密码写进教程、仓库或 PowerShell 历史。
+
+### 1.6 第四步：去管理面板登记 SOCKS5
+
+打开：<https://opus8cf-admin-openal.pages.dev/#landings>
+
+按下面填写：
+
+| 面板字段 | 填写内容 |
+|---|---|
+| 名称 | 例如 `US-OpenAI-02` |
+| 地区 | 例如 `US`、`SG` |
+| 主机名或 IP | 新 VPS 公网 IP，不带 `http://` |
+| 端口 | `40008` |
+| 用户名 | 脚本中输入的 `SOCKS_USER` |
+| 密码 | 脚本中输入的同一密码 |
+| 优先级 | 使用没有重复的数字；备机数字应大于当前主机 |
+| 负责域名 | 通用兜底机留空；专项机填写 `openai.com` 等根域名 |
+| 创建后立即启用 | **首次登记先取消勾选** |
+
+执行顺序：
+
+1. 点击“新增落地机”。
+2. 在新卡片上点击“连通测试”。
+3. 只有显示“健康”后才点击“启用”。
+4. 等待至少 60 秒，让所有边缘节点刷新加密配置包。
+
+面板测试失败时不要反复启用。先检查 VPS 的 `40008` 监听、云防火墙、用户名/密码以及 WARP `40000`。
+
+### 1.7 第五步：配置域名和用户权限
+
+如果是专项落地，还需打开：
+
+- <https://opus8cf-admin-openal.pages.dev/#routes>：把业务根域名加入“落地分流”全局清单；
+- <https://opus8cf-admin-openal.pages.dev/#users>：给隔离测试用户开启“AI 落地解锁”。
+
+只有“用户已解锁 + 域名在全局清单 + 有匹配落地机”三个条件同时成立，访问才会主动走新 SOCKS5。
+完成真实业务访问测试后，再决定是否把新机优先级调到现有主机之前。
+
+不要为了增加第二台落地机覆盖 GitHub Secrets 中的 `SERVICES_IP`、`SERVICES_USER`、
 `SERVICES_CODE`、`SOCKS_USER` 或 `SOCKS_PASSWORD`。这些名称仍被旧的单落地部署、健康检查视角、
 节点部署和 Zero Trust 工作流共同引用，修改它们会改变既有主落地，而不是单纯“追加一台”。
 
