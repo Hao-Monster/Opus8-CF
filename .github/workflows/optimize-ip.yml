@@ -27,6 +27,7 @@ jobs:
       LANDING_SOCKS_PORT: ${{ vars.SERVICES_PORT }}
       LANDING_SOCKS_USER: ${{ secrets.SOCKS_USER }}
       LANDING_SOCKS_PASSWORD: ${{ secrets.SOCKS_PASSWORD }}
+      SUB_MAX_OPTIMIZED_IPS_PER_NODE: ${{ vars.SUB_MAX_OPTIMIZED_IPS_PER_NODE || '3' }}
       CLOUDFLARE_PROXY_PERMISSION_REF: ${{ secrets.CLOUDFLARE_PROXY_PERMISSION_REF }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
