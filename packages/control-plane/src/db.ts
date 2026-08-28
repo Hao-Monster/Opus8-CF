@@ -30,6 +30,8 @@ export interface Env {
   ROOT_DOMAIN?: string;
   SUB_BASE?: string;
   USE_OPTIMIZED_IPS?: string;
+  SUB_MAX_OPTIMIZED_IPS_PER_NODE?: string;
+  CLASH_ALIAS_SUNSET?: string;
   OPUS8_BUILD_ID?: string;
   ADMIN_UI_ORIGINS?: string;
   HMAC_V1_ACCEPT_UNTIL?: string;

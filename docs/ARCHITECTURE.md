@@ -79,7 +79,7 @@ Opus8‑CF 的五个「别人没有」的核心创新：
 1. **部署**：CI 用「多账号矩阵」把边缘节点 Worker 批量 `wrangler deploy` 到 N 个 CF 账号。部署前优先读取控制面已注册的节点路径；只有首次从 `/` 迁移时才按节点 ID 和 HMAC 密钥派生新路径。部署后向控制面 `POST /api/nodes/register`（带签名）自报身份（账号别名、域名、地区、能力、优选 IP、传输路径）。因此普通重部署和节点密钥轮换都不会隐式换路径。
 2. **鉴权同步**：边缘节点冷启动/定时向控制面 `GET /api/nodes/<id>/uuids`（HMAC v2 绑定节点、方法、路径/查询与正文）拉取「当前有效设备 UUID 集」，写入以节点 ID 隔离的 KV 缓存。动态设备同时下发当前与上一 24 小时时间窗 UUID；控制面在用户或设备变更时推进策略版本并主动清理节点缓存，通知失败时由 15 秒 TTL 兜底。
 3. **连接**：用户客户端用设备专属 UUID 连边缘节点 → 节点校验 UUID ∈ 有效集 → 以用户 ID 作为稳定 IP 限制主体 → 按域名决定走 CF 出口还是 SOCKS5 落地 → 出网。
-4. **订阅**：客户端定时拉 `GET /sub/<device-token>` → Workers 原生 Rate Limiting 先按 HMAC 后的来源和 token 执行 PoP 本地限流 → 可选执行 HWID 首次绑定 → 控制面生成包含当前动态 UUID 的订阅。旧用户通过静态兼容设备保持原链接和节点配置有效。Xray URI、Mihomo YAML 和 sing-box JSON 从同一节点记录生成，但按各客户端官方字段表达 Early Data。
+4. **订阅**：客户端定时拉 `GET /sub/<device-token>` → Workers 原生 Rate Limiting 先按 HMAC 后的来源和 token 执行 PoP 本地限流 → 可选执行 HWID 首次绑定 → 控制面从同一规范节点集原生生成 base64、Xray 完整配置数组、Mihomo YAML 或 sing-box JSON。旧用户通过静态兼容设备保持原链接和节点配置有效；四种格式按各客户端官方字段表达 Early Data，并共享已验证优选 IP、稳定节点编号和严格 TLS/SNI。
 5. **计量**：IP 租约准入始终启用；只有配置正流量额度的用户才由节点汇总连接数和上下行字节。远离额度上限时按最多 8 MiB / 120 秒聚合，剩余额度低于 25% 和 10% 时自动缩小批次并缩短刷新间隔，连接结束时刷新尾数；本地会话仍按累计字节执行额度拦截。控制面逐个保存幂等事件 ID，但将同一请求内最多 20 个事件按用户、节点和小时合并为一次 `usage` 汇总写入。不限量用户跳过字节钩子和用量事件。
 
 ---
@@ -111,7 +111,7 @@ Opus8‑CF 的五个「别人没有」的核心创新：
 
 - **① 节点注册表**（D1 `nodes`）：node_id、account_alias、hostname、region、capabilities、preferred_ip、health、last_seen。
 - **② 用户/设备凭证注册表**（D1 `users` + `user_devices`）：用户策略与每设备独立 token、基础 UUID、动态/静态模式、HWID 模式和匿名绑定状态。
-- **③ 订阅生成器**：按用户节点组 + 实时优选IP 生成 Clash / sing‑box / v2rayN / base64 多格式（继承 cmliu‑SUB / WorkerVless2sub 思路，内建化）。
+- **③ 订阅生成器**：按用户节点组 + 有效期内的双视角优选 IP 原生生成 base64 / Mihomo / sing-box / Xray；完整模板随仓库版本发布，Mihomo 与 sing-box 规则资产由版本化 KV 路由提供，不依赖第三方转换服务。
 - **④ UUID 同步总线**：提供有效 UUID 集拉取端点、单调策略版本和用户变更后的节点级主动失效。
 - **⑤ Admin API**：用户/节点/套餐/订阅 CRUD，JWT 鉴权。
 - **⑥ 遥测汇聚**：接收节点上报，聚合到 D1 `usage`。
@@ -125,9 +125,9 @@ Opus8‑CF 的五个「别人没有」的核心创新：
 这是你选的「多账号批量部署」的核心。全部在 GitHub Actions 里：
 
 - **多账号矩阵部署** `deploy-nodes.yml`：以 matrix 遍历 `infra/accounts.json` 里的账号，用各账号的 API Token 批量 `wrangler deploy` 边缘节点；部署后触发自注册。
-- **优选IP 刷新** `optimize-ip.yml`（定时）：跑 CloudflareSpeedTest → 产出三地区(美/亚/欧)最优 IP → 更新控制面 `nodes.preferred_ip` 与订阅。
+- **优选IP 刷新** `optimize-ip.yml`（每 4 小时）：发现最多 64 个通用候选，每节点最多探测 32 个，以 4 并发执行 GitHub Runner + 落地 VPS 双视角真实链路验证，按较慢侧延迟排序并发布最多 8 个、有效期 12 小时的 IP。
 - **健康探测 + 受控恢复** `healthcheck.yml`（定时）：探活所有节点并自动标记/剔除异常节点；恢复或迁移由运维确认，禁止自动跨账号规避服务商限制。
-- **真实客户端矩阵** `client-compatibility.yml`（手动）：固定官方 Xray、Mihomo、sing-box 发布物及 SHA-256，在一台健康 canary 上消费三种真实订阅，验证严格 TLS/SNI/WebSocket、HTTPS 出站和 D1 用量回写；失败不自动部署、换号或恢复节点。
+- **真实客户端矩阵** `client-compatibility.yml`（手动）：固定官方 Xray、Mihomo、sing-box 发布物及 SHA-256，在一台健康 canary 上交叉核对四种订阅并用三个核心验证实际链路、严格 TLS/SNI/WebSocket、HTTPS 出站和 D1 用量回写；失败不自动部署、换号或恢复节点。
 - **UUID 同步兜底** `sync-uuids.yml`（可选/定时）：对不主动拉取的节点批量推送有效名单。
 
 ### 3.4 管理独立站 Admin UI（Cloudflare Pages）
@@ -173,7 +173,7 @@ Opus8‑CF 的五个「别人没有」的核心创新：
 ### P2 · 控制面 MVP（3–4 天）· 依赖 P1
 - [ ] D1 schema（nodes / users / plans / usage / orders 预留）+ 迁移脚本
 - [ ] Admin API：用户 CRUD、节点注册接收、有效 UUID 名单端点（HMAC 校验）
-- [ ] 订阅生成器：base64 + Clash + sing‑box 三格式，注入优选IP
+- [x] 订阅生成器：base64 + Mihomo + sing-box + Xray 四格式，注入按节点双视角验证的优选 IP
 - [ ] 边缘节点改为真正从控制面拉取名单（打通 UUID 同步总线）
 - 验收：后台建用户 → 生成订阅 → 客户端导入 → 连通；后台禁用用户 → 下次拉取后连不上。
 

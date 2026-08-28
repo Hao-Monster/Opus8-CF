@@ -1,5 +1,9 @@
 # Opus8-CF 部署手册
 
+只增加一个新的 Cloudflare 纯节点账号时，请直接使用
+[`NEW-CLOUDFLARE-ACCOUNT-NODE.md`](NEW-CLOUDFLARE-ACCOUNT-NODE.md)；其中包含最小权限 Token、动态 Secret
+映射、拓扑门禁、首次 `provision + canary`、验收和故障处理。不要照搬本文件中主账号的 D1/Pages 权限给纯节点账号。
+
 ## 凭据与执行模型
 
 所有敏感凭据都存放在 **GitHub Actions Secrets**，部署动作经由 GitHub Actions 运行（CI 引用 secrets 执行
@@ -15,6 +19,17 @@
 | `ACCESS_KEY_ID` / `SECRET_ACCESS_KEY` / `S3_API_ENDPOINT`（+`_NUM1`） | R2(S3) 凭据，用作优选IP/注册表产物存储 | acc1 / acc2 |
 | `SERVICES_IP` / `SERVICES_USER` / `SERVICES_CODE` | 落地机 SSH 地址/root 用户/SSH 密码 | — |
 | `SOCKS_USER` / `SOCKS_PASSWORD` | Dante 使用的独立 SOCKS5 用户名/密码 | — |
+
+### Worker Targeted Placement
+
+节点部署工作流默认把 `SERVICES_IP:40011` 作为 Workers Targeted Placement 的 TCP 探测目标，使边缘 Worker
+尽量在靠近主落地 VPS 的 Cloudflare 数据中心运行。可以通过 GitHub Actions Repository Variable
+`WORKER_PLACEMENT_HOST` 覆盖，格式必须是 `hostname:port`、`IPv4:port` 或 `[IPv6]:port`。该值不是凭据，
+不要放入 Secret。
+
+当前主落地使用同一 VPS 的 `40010`（WARP）和 `40011`（直出），因此以 `40011` 定位不会改变面板的按域名
+选路。后续若同一 Worker 主要连接多台不同地区的落地机，不应继续固定到单一主机；应改用 Smart Placement，
+或按地区拆分 Worker，并重新比较 Worker 到各落地的 RTT 和持续吞吐。
 
 ### 生产密钥
 
@@ -74,12 +89,35 @@ Early Data 不存入节点表，而是按客户端官方语义生成：
 | Mihomo | `ws-opts.path=<transport_path>` | `max-early-data: 2560` 与 `early-data-header-name: Sec-WebSocket-Protocol` |
 | sing-box | `transport.path=<transport_path>` | `max_early_data: 2560` 与 `early_data_header_name: Sec-WebSocket-Protocol` |
 
+### 多格式订阅与优选 IP 展开
+
+同一个 `GET /sub/<device-token>` 通过 `?format=base64|mihomo|singbox|xray` 下发四种原生格式；
+未指定时按 User-Agent 选择，普通客户端保持 base64。`format=clash` 仅保留一个发布周期作为
+Mihomo 兼容别名，响应带 `Deprecation: true` 和 `X-Opus8-Format-Alias`；可用
+`CLASH_ALIAS_SUNSET` 配置符合 HTTP-date 的 `Sunset` 响应头。
+
+- base64：逐行 VLESS URI；
+- Mihomo：完整 YAML，`PROXY` 手选组包含 `Auto`、`Fallback`、每个节点和 `DIRECT`；
+- sing-box：完整 JSON，包含 `PROXY` selector、`Auto` urltest 和规则路由；
+- Xray：JSON 数组，每个节点对应一份可独立导入的完整配置。
+
+四种格式先由同一解析器生成规范节点集，因此节点顺序、稳定编号、地址、UUID、SNI、Host 和路径
+保持一致。每个 Worker 最多采用 8 个仍在有效期内且通过双视角真实 VLESS 验证的优选 IP；同一
+Worker 内去重，没有有效 IP 时只回退一条 Worker 原始域名。生产实际上限由
+`SUB_MAX_OPTIMIZED_IPS_PER_NODE=1..8` 控制，工作流默认 3 作为首阶段；观察稳定后再设为 8。
+
+模板位于 `packages/control-plane/templates/`，随代码版本发布，不依赖第三方订阅转换服务。
+Mihomo/sing-box 二进制规则固定在 `infra/subscription-rules/v1/`，manifest 记录来源、大小和
+SHA-256。控制面部署会先校验并上传规则到 KV，再部署 Worker；发布后逐个下载验哈希，并对四种
+订阅做等价性烟测。任何发布后检查失败都会自动回滚到部署前 Worker 版本。规则或模板变更应新建
+版本目录和路由，不要覆盖已有 `v1` 语义。
+
 首次上线必须按以下顺序：
 
 1. 先部署控制面；脚本会给已有 D1 增加 `transport_path`，旧记录默认 `/`；
 2. 手动运行 `deploy-nodes`，选择一台节点和 `transport_mode=canary`；
 3. 新 Worker 接受新路径，同时把该节点上一条路径（首次迁移时为 `/`）保留 72 小时；节点注册成功后，控制面只更新该节点的订阅路径；
-4. 验证管理站节点页、三种订阅、GitHub Runner 和落地 VPS 的 VLESS smoke，再逐台完成 canary；
+4. 验证管理站节点页、四种订阅、GitHub Runner 和落地 VPS 的 VLESS smoke，再逐台完成 canary；
 5. 等客户端至少刷新一次订阅后，把 `infra/transport-mode.txt` 从 `canary` 改为 `strict` 并提交；后续自动部署将永久保持 strict。也可先手动运行单个节点并选择 `transport_mode=strict` 做一次性验收；
 6. `healthcheck-nodes`、`optimize-ip` 和 Zero Trust canary 会从节点 API 读取路径，任何仍硬编码 `/` 的链路都会在验收中失败。
 
@@ -193,8 +231,10 @@ Worker 的 `/api/operations/overview` 与用户活动接口；24 小时趋势和
 
 ## Token 权限要求
 
-各账号对应的 `API_TOKEN` / `API_TOKEN_NUM1` 至少需要：Account → Workers Scripts:Edit、
-Workers KV Storage:Edit、D1:Edit、Cloudflare Pages:Edit；Zone → DNS:Edit（用自定义域时）。
+控制面账号的 Token 需要 Account → Workers Scripts:Edit、Workers KV Storage:Edit、D1:Edit、
+Cloudflare Pages:Edit。纯节点账号不需要 D1 或 Pages 权限，只需要 Account Settings:Read、Workers Scripts:Edit、
+Workers KV Storage:Edit，以及目标 Zone 的 Workers Routes:Edit；详细范围见新增账号教程。若特定账号的 Custom Domain
+API 返回明确 DNS 权限错误，再只对目标 Zone 增加 DNS:Edit。
 控制面账号如需自动配置订阅 WAF 前置规则，还需要可选的 Zone WAF:Edit；缺少该权限时，
 Workers Rate Limiting binding 仍会强制生效。
 其中承载 Zero Trust 管理站的 `API_TOKEN_NUM1` 还需要 Access: Apps and Policies Write。
@@ -225,7 +265,7 @@ GitHub Secret `ACCESS_ADMIN_EMAIL` 保存唯一允许登录的管理员邮箱，
 1. 从 `infra/client-compatibility.json` 下载固定版本的 Xray、Mihomo 和 sing-box Linux amd64
    官方发布物，并在解压前强制校验 SHA-256；
 2. 创建一个只分配给 canary 节点、有效期一天的隔离用户，等待边缘策略失效传播；
-3. 分别获取 base64、Mihomo YAML、sing-box JSON，交叉核对服务器、UUID、SNI、Host、
+3. 分别获取 base64、Xray JSON 数组、Mihomo YAML、sing-box JSON，交叉核对节点数量、服务器、UUID、SNI、Host、
    WebSocket pathname 和 Early Data；任何格式启用不安全证书校验都会失败；
 4. 用三个官方内核的配置检查命令验证完整配置，再各自启动本地 SOCKS 入站，经订阅节点访问一个
    HTTPS 目标；

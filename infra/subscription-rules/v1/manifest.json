@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "version": "v1",
+  "assets": [
+    {
+      "path": "mihomo/private_domain.mrs",
+      "key": "opus8:rules:v1:mihomo:private_domain.mrs",
+      "size": 742,
+      "sha256": "0f9ba48d4d0b0d192a4e7c3548486dde05e5a92e6e58e8ea8c9cc302712a1420",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/private_domain.mrs"
+    },
+    {
+      "path": "mihomo/cn_domain.mrs",
+      "key": "opus8:rules:v1:mihomo:cn_domain.mrs",
+      "size": 544480,
+      "sha256": "c41ab7d446856b0fa2db0b40435f8eccffe8b7f76b934f6eba4b8f35ef5d225c",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/cn_domain.mrs"
+    },
+    {
+      "path": "mihomo/geolocation_not_cn.mrs",
+      "key": "opus8:rules:v1:mihomo:geolocation_not_cn.mrs",
+      "size": 195948,
+      "sha256": "09869e57c7abab61a382079f9487b21343bfedb9887d36a44024a086656fe6e1",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/geolocation_not_cn.mrs"
+    },
+    {
+      "path": "mihomo/gfw_domain.mrs",
+      "key": "opus8:rules:v1:mihomo:gfw_domain.mrs",
+      "size": 33938,
+      "sha256": "72d143583db2f4b6b4eaef39a728044625ed1874635abbcf829d6ca617c6cf2d",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/gfw_domain.mrs"
+    },
+    {
+      "path": "mihomo/private_ip.mrs",
+      "key": "opus8:rules:v1:mihomo:private_ip.mrs",
+      "size": 155,
+      "sha256": "076ea1da10b442f01c6fb3b86a66411727a15df69d70e8d600a8a458b07a8bb0",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/private_ip.mrs"
+    },
+    {
+      "path": "mihomo/cn_ip.mrs",
+      "key": "opus8:rules:v1:mihomo:cn_ip.mrs",
+      "size": 26478,
+      "sha256": "8dad7c0b90b3aef637fa562024f6ede58b948be5ab61f76b3a8c7244482834d2",
+      "contentType": "application/octet-stream",
+      "source": "https://rules.thinderbox.uk:8443/mihomo/cn_ip.mrs"
+    },
+    {
+      "path": "singbox/private_domain.srs",
+      "key": "opus8:rules:v1:singbox:private_domain.srs",
+      "size": 754,
+      "sha256": "260491243e0266e5ba543f509ca7f13b07d6f4c2c26ade3f675ddea1661f3213",
+      "contentType": "application/octet-stream",
+      "source": "https://raw.githubusercontent.com/SagerNet/sing-geosite/f0a27e83e462d93efa2632c999fd8ccfce971de8/geosite-private.srs"
+    },
+    {
+      "path": "singbox/cn_domain.srs",
+      "key": "opus8:rules:v1:singbox:cn_domain.srs",
+      "size": 55255,
+      "sha256": "63f6ef9ca510efd74cfa7def8e1e093a781886558d8aad4760984fddb16811ef",
+      "contentType": "application/octet-stream",
+      "source": "https://raw.githubusercontent.com/SagerNet/sing-geosite/f0a27e83e462d93efa2632c999fd8ccfce971de8/geosite-cn.srs"
+    },
+    {
+      "path": "singbox/geolocation_not_cn.srs",
+      "key": "opus8:rules:v1:singbox:geolocation_not_cn.srs",
+      "size": 167878,
+      "sha256": "f69a1c8ff9ad0ed0a9448a68ea960564c05d02baaf52bfa7504bc97e035decb9",
+      "contentType": "application/octet-stream",
+      "source": "https://raw.githubusercontent.com/SagerNet/sing-geosite/f0a27e83e462d93efa2632c999fd8ccfce971de8/geosite-geolocation-!cn.srs"
+    },
+    {
+      "path": "singbox/cn_ip.srs",
+      "key": "opus8:rules:v1:singbox:cn_ip.srs",
+      "size": 34074,
+      "sha256": "0acf5dad38fba9db2dade29ce5e4edc6902220944f30628ae46ed16cb0ec5edd",
+      "contentType": "application/octet-stream",
+      "source": "https://raw.githubusercontent.com/SagerNet/sing-geoip/b9c5e675b4d5359d4b47f4434fa7ae77e9991306/geoip-cn.srs"
+    }
+  ]
+}

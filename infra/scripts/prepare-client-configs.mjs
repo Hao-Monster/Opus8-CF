@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const requireFromControlPlane = createRequire(
+  resolve(repoRoot, "packages", "control-plane", "package.json"),
+);
+const { parse: parseYaml, stringify: stringifyYaml } = requireFromControlPlane("yaml");
 
 const EARLY_DATA = 2560;
 const EARLY_DATA_HEADER = "Sec-WebSocket-Protocol";
@@ -16,59 +23,40 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function scalar(value) {
-  const text = value.trim();
-  if (text.startsWith('"') && text.endsWith('"')) {
-    return JSON.parse(text);
-  }
-  if (text.startsWith("'") && text.endsWith("'")) {
-    return text.slice(1, -1).replaceAll("''", "'");
-  }
-  return text;
-}
-
-function yamlField(block, indent, key) {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = block.match(
-    new RegExp(`^${" ".repeat(indent)}${escaped}:\\s*(.+?)\\s*$`, "m"),
-  );
-  assert(match, `Mihomo 订阅缺少 ${key}`);
-  return scalar(match[1]);
-}
-
 function firstMihomoProxy(text) {
-  const proxies = text.match(/^proxies:\s*\r?\n([\s\S]*?)(?=^proxy-groups:)/m);
-  assert(proxies, "Mihomo 订阅缺少 proxies/proxy-groups");
-  const markers = [...proxies[1].matchAll(/^  - name:/gm)];
-  assert(markers.length > 0, "Mihomo 订阅没有代理条目");
-  const start = markers[0].index;
-  const end = markers[1]?.index ?? proxies[1].length;
-  const block = proxies[1].slice(start, end);
-  assert(!/^\s+skip-cert-verify:\s*true\s*$/mi.test(block), "Mihomo 禁止跳过证书校验");
-  assert(!/^\s+alpn:\s*/mi.test(block), "Mihomo WebSocket 禁止强制 ALPN");
+  const config = parseYaml(text);
+  assert(config && typeof config === "object", "Mihomo 订阅不是有效对象");
+  assert(Array.isArray(config.proxies) && config.proxies.length > 0, "Mihomo 订阅没有代理条目");
+  const proxy = structuredClone(config.proxies[0]);
+  assert(proxy["skip-cert-verify"] !== true, "Mihomo 禁止跳过证书校验");
+  assert(!proxy.alpn, "Mihomo WebSocket 禁止强制 ALPN");
   return {
-    name: yamlField(block, 2, "- name"),
-    type: yamlField(block, 4, "type"),
-    server: yamlField(block, 4, "server"),
-    port: Number(yamlField(block, 4, "port")),
-    uuid: yamlField(block, 4, "uuid"),
-    network: yamlField(block, 4, "network"),
-    tls: yamlField(block, 4, "tls") === "true",
-    serverName: yamlField(block, 4, "servername"),
-    fingerprint: yamlField(block, 4, "client-fingerprint"),
-    path: yamlField(block, 6, "path"),
-    host: yamlField(block, 8, "Host"),
-    earlyData: Number(yamlField(block, 6, "max-early-data")),
-    earlyDataHeader: yamlField(block, 6, "early-data-header-name"),
+    config,
+    nodeCount: config.proxies.length,
+    name: proxy.name,
+    type: proxy.type,
+    server: proxy.server,
+    port: Number(proxy.port),
+    uuid: proxy.uuid,
+    network: proxy.network,
+    tls: proxy.tls === true,
+    serverName: proxy.servername,
+    fingerprint: proxy["client-fingerprint"],
+    path: proxy["ws-opts"]?.path,
+    host: proxy["ws-opts"]?.headers?.Host,
+    earlyData: Number(proxy["ws-opts"]?.["max-early-data"]),
+    earlyDataHeader: proxy["ws-opts"]?.["early-data-header-name"],
   };
 }
 
 function parseBase64Subscription(text) {
   const decoded = Buffer.from(text.trim(), "base64").toString("utf8");
-  const link = decoded
+  const links = decoded
     .split(/\r?\n/)
     .map((value) => value.trim())
-    .find(Boolean);
+    .filter(Boolean);
+  const link = links[0];
+  assert(links.every((value) => value.startsWith("vless://")), "base64 订阅含非 VLESS 条目");
   assert(link?.startsWith("vless://"), "base64 订阅没有 VLESS 条目");
   const url = new URL(link);
   const path = url.searchParams.get("path");
@@ -97,6 +85,7 @@ function parseBase64Subscription(text) {
     "Xray WebSocket 路径含未知查询参数",
   );
   return {
+    nodeCount: links.length,
     address: url.hostname,
     port: 443,
     uuid: decodeURIComponent(url.username),
@@ -107,10 +96,47 @@ function parseBase64Subscription(text) {
   };
 }
 
+function parseXraySubscription(text) {
+  const configs = JSON.parse(text);
+  assert(Array.isArray(configs) && configs.length > 0, "Xray 订阅必须是非空配置数组");
+  const config = structuredClone(configs[0]);
+  const outbound = config.outbounds?.find(
+    (item) => item?.tag === "proxy" && item?.protocol === "vless",
+  );
+  assert(outbound, "Xray 配置缺少 proxy VLESS 出站");
+  const target = outbound.settings?.vnext?.[0];
+  const user = target?.users?.[0];
+  const tls = outbound.streamSettings?.tlsSettings;
+  const ws = outbound.streamSettings?.wsSettings;
+  assert(target?.address && target?.port === 443, "Xray 服务器或端口无效");
+  assert(user?.id && user?.encryption === "none", "Xray VLESS 用户配置无效");
+  assert(outbound.streamSettings?.network === "ws", "Xray 必须使用 WebSocket");
+  assert(outbound.streamSettings?.security === "tls", "Xray 必须启用 TLS");
+  assert(tls?.allowInsecure === false, "Xray 禁止跳过证书校验");
+  assert(tls?.serverName && ws?.headers?.Host === tls.serverName, "Xray 的 SNI 与 Host 必须一致");
+  assert(!tls?.alpn, "Xray WebSocket 禁止强制 ALPN");
+  const parsedPath = new URL(ws.path, "https://opus8.invalid");
+  assert(parsedPath.searchParams.get("ed") === String(EARLY_DATA), "Xray Early Data 参数错误");
+  return {
+    config,
+    nodeCount: configs.length,
+    address: target.address,
+    port: target.port,
+    uuid: user.id,
+    serverName: tls.serverName,
+    host: ws.headers.Host,
+    path: ws.path,
+    pathName: parsedPath.pathname,
+  };
+}
+
 function parseSingboxSubscription(text) {
   const parsed = JSON.parse(text);
   assert(Array.isArray(parsed.outbounds) && parsed.outbounds.length > 0, "sing-box 订阅没有 outbounds");
-  const outbound = structuredClone(parsed.outbounds[0]);
+  const vlessOutbounds = parsed.outbounds.filter((item) => item?.type === "vless");
+  const candidate = vlessOutbounds[0];
+  assert(candidate, "sing-box 订阅没有 VLESS outbound");
+  const outbound = structuredClone(candidate);
   assert(outbound.type === "vless", "sing-box outbound 必须为 VLESS");
   assert(outbound.server && outbound.server_port === 443, "sing-box 服务器或端口无效");
   assert(outbound.uuid, "sing-box outbound 缺少 UUID");
@@ -133,7 +159,7 @@ function parseSingboxSubscription(text) {
     outbound.transport?.headers?.Host === outbound.tls.server_name,
     "sing-box 的 SNI 与 Host 必须一致",
   );
-  return outbound;
+  return { config: parsed, outbound, nodeCount: vlessOutbounds.length };
 }
 
 function validatePorts(ports) {
@@ -147,20 +173,24 @@ function validatePorts(ports) {
 
 export async function prepareClientConfigs({
   base64Path,
+  xrayPath,
   mihomoPath,
   singboxPath,
   outputDir,
   ports = DEFAULT_PORTS,
 }) {
   validatePorts(ports);
-  const [base64Text, mihomoText, singboxText] = await Promise.all([
+  const [base64Text, xrayText, mihomoText, singboxText] = await Promise.all([
     readFile(base64Path, "utf8"),
+    readFile(xrayPath, "utf8"),
     readFile(mihomoPath, "utf8"),
     readFile(singboxPath, "utf8"),
   ]);
-  const xrayEntry = parseBase64Subscription(base64Text);
+  const base64Entry = parseBase64Subscription(base64Text);
+  const xrayEntry = parseXraySubscription(xrayText);
   const mihomoEntry = firstMihomoProxy(mihomoText);
-  const singboxOutbound = parseSingboxSubscription(singboxText);
+  const singboxParsed = parseSingboxSubscription(singboxText);
+  const singboxOutbound = singboxParsed.outbound;
 
   assert(mihomoEntry.type === "vless", "Mihomo 代理必须为 VLESS");
   assert(mihomoEntry.network === "ws", "Mihomo 代理必须使用 WebSocket");
@@ -174,83 +204,60 @@ export async function prepareClientConfigs({
   assert(mihomoEntry.serverName === mihomoEntry.host, "Mihomo 的 SNI 与 Host 必须一致");
 
   const comparisons = [
-    ["服务器地址", xrayEntry.address, mihomoEntry.server, singboxOutbound.server],
-    ["UUID", xrayEntry.uuid, mihomoEntry.uuid, singboxOutbound.uuid],
-    ["SNI", xrayEntry.serverName, mihomoEntry.serverName, singboxOutbound.tls.server_name],
-    ["Host", xrayEntry.host, mihomoEntry.host, singboxOutbound.transport.headers.Host],
-    ["WebSocket pathname", xrayEntry.pathName, mihomoEntry.path, singboxOutbound.transport.path],
+    ["服务器地址", base64Entry.address, xrayEntry.address, mihomoEntry.server, singboxOutbound.server],
+    ["UUID", base64Entry.uuid, xrayEntry.uuid, mihomoEntry.uuid, singboxOutbound.uuid],
+    ["SNI", base64Entry.serverName, xrayEntry.serverName, mihomoEntry.serverName, singboxOutbound.tls.server_name],
+    ["Host", base64Entry.host, xrayEntry.host, mihomoEntry.host, singboxOutbound.transport.headers.Host],
+    ["WebSocket pathname", base64Entry.pathName, xrayEntry.pathName, mihomoEntry.path, singboxOutbound.transport.path],
   ];
   for (const [label, ...values] of comparisons) {
-    assert(new Set(values).size === 1, `三种订阅的${label}不一致`);
+    assert(new Set(values).size === 1, `四种订阅的${label}不一致`);
   }
   assert(mihomoEntry.port === 443, "Mihomo 端口必须为 443");
+  assert(
+    new Set([
+      base64Entry.nodeCount,
+      xrayEntry.nodeCount,
+      mihomoEntry.nodeCount,
+      singboxParsed.nodeCount,
+    ]).size === 1,
+    "四种订阅的节点数量不一致",
+  );
 
-  const xrayConfig = {
-    log: { loglevel: "warning" },
-    inbounds: [
-      {
-        tag: "socks-in",
-        listen: "127.0.0.1",
-        port: ports.xray,
-        protocol: "socks",
-        settings: { auth: "noauth", udp: false },
-      },
-    ],
-    outbounds: [
-      {
-        tag: "opus8",
-        protocol: "vless",
-        settings: {
-          vnext: [
-            {
-              address: xrayEntry.address,
-              port: xrayEntry.port,
-              users: [{ id: xrayEntry.uuid, encryption: "none" }],
-            },
-          ],
-        },
-        streamSettings: {
-          network: "ws",
-          security: "tls",
-          tlsSettings: {
-            serverName: xrayEntry.serverName,
-            allowInsecure: false,
-            fingerprint: "chrome",
-          },
-          wsSettings: {
-            path: xrayEntry.path,
-            headers: { Host: xrayEntry.host },
-          },
-        },
-      },
-    ],
-  };
+  const xrayConfig = structuredClone(xrayEntry.config);
+  xrayConfig.inbounds = [
+    {
+      tag: "socks-in",
+      listen: "127.0.0.1",
+      port: ports.xray,
+      protocol: "socks",
+      settings: { auth: "noauth", udp: false },
+    },
+  ];
 
-  const mihomoConfig = [
-    `socks-port: ${ports.mihomo}`,
-    "allow-lan: false",
-    "bind-address: 127.0.0.1",
-    "mode: rule",
-    "log-level: warning",
-    mihomoText.trim(),
-    "",
-  ].join("\n");
+  const mihomoConfigObject = structuredClone(mihomoEntry.config);
+  delete mihomoConfigObject["mixed-port"];
+  delete mihomoConfigObject["redir-port"];
+  delete mihomoConfigObject["external-controller"];
+  mihomoConfigObject["socks-port"] = ports.mihomo;
+  mihomoConfigObject["allow-lan"] = false;
+  mihomoConfigObject["bind-address"] = "127.0.0.1";
+  mihomoConfigObject.mode = "rule";
+  mihomoConfigObject["log-level"] = "warning";
+  const mihomoConfig = stringifyYaml(mihomoConfigObject, { lineWidth: 0 });
 
-  const singboxConfig = {
-    log: { level: "warn", timestamp: true },
-    inbounds: [
-      {
-        type: "socks",
-        tag: "socks-in",
-        listen: "127.0.0.1",
-        listen_port: ports.singbox,
-      },
-    ],
-    outbounds: [singboxOutbound],
-    route: { final: singboxOutbound.tag },
-  };
+  const singboxConfig = structuredClone(singboxParsed.config);
+  singboxConfig.inbounds = [
+    {
+      type: "socks",
+      tag: "socks-in",
+      listen: "127.0.0.1",
+      listen_port: ports.singbox,
+    },
+  ];
 
   const metadata = {
+    nodeCount: xrayEntry.nodeCount,
     address: xrayEntry.address,
     port: 443,
     serverName: xrayEntry.serverName,
@@ -278,7 +285,7 @@ function parseArguments(argv) {
     assert(key?.startsWith("--") && value, `参数无效: ${key || "(empty)"}`);
     values[key.slice(2)] = value;
   }
-  for (const required of ["base64", "mihomo", "singbox", "output-dir"]) {
+  for (const required of ["base64", "xray", "mihomo", "singbox", "output-dir"]) {
     assert(values[required], `缺少 --${required}`);
   }
   return values;
@@ -293,6 +300,7 @@ if (invokedAsScript) {
     const args = parseArguments(process.argv.slice(2));
     const metadata = await prepareClientConfigs({
       base64Path: resolve(args.base64),
+      xrayPath: resolve(args.xray),
       mihomoPath: resolve(args.mihomo),
       singboxPath: resolve(args.singbox),
       outputDir: resolve(args["output-dir"]),

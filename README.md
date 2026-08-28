@@ -29,7 +29,7 @@
 - [x] P6.8.2 控制面 CORS 收口：仅生产管理站可跨域调用管理员 API
 - [x] P6.8.3 节点 HMAC v2：绑定方法、路径、查询与正文，滚动淘汰旧签名
 - [x] P6.8.4 订阅限流：Cloudflare 原生计数、令牌/来源双层保护、零 KV 计数写入
-- [x] P6.8.5 传输路径平台化：节点独立路径、三种订阅同源、72 小时 canary 迁移
+- [x] P6.8.5 传输路径平台化：节点独立路径、四种订阅同源、72 小时 canary 迁移
 - [x] P6.8.6 客户端兼容矩阵：固定 Xray/Mihomo/sing-box 版本与校验和，真实 TLS/SNI/WS/用量验收
 - [x] P6.8.7 Cloudflare 合规与资源门禁：书面许可默认拒绝、拓扑白名单、只读 GraphQL 资源审计、零 KV 审计写入
 - [x] P6.9 生产灾备：D1 认证加密备份/隔离恢复、JWT/HMAC/落地配置无停机轮换
@@ -49,7 +49,9 @@
 即时创建一次性注册任务，绑定 Node ID、账号别名、域名和传输路径，部署验证完成后自动收回旧凭据。
 管理站“节点管理”也可生成同样的一次性令牌，供单机部署或故障恢复使用；令牌只显示一次。
 P6.10 的发布顺序、Secret 配置和新增账号步骤见
-[`docs/P6.10-OPERATIONS-HARDENING.md`](docs/P6.10-OPERATIONS-HARDENING.md)。
+[`docs/P6.10-OPERATIONS-HARDENING.md`](docs/P6.10-OPERATIONS-HARDENING.md)。新 Cloudflare 账号从 Token、
+Secrets、声明式拓扑到首次 canary 的完整步骤见
+[`docs/NEW-CLOUDFLARE-ACCOUNT-NODE.md`](docs/NEW-CLOUDFLARE-ACCOUNT-NODE.md)。
 
 ## 落地分流运维
 

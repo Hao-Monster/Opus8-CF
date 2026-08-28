@@ -80,6 +80,17 @@ test("workflow and deploy script inject both integration secrets", () => {
   assert.match(deployScript, /name = "ADMIN_LOGIN_RATE_LIMITER"/);
   assert.match(deployScript, /crons = \["17 \*\/6 \* \* \*"\]/);
   assert.match(deployScript, /\[observability\.logs\]/);
+  assert.match(deployScript, /subscription-renderer-test\.mjs/);
+  assert.match(deployScript, /subscription-rules-test\.mjs/);
+  assert.match(deployScript, /optimized-ip-selection-test\.mjs/);
+  assert.match(deployScript, /prepare-client-configs\.mjs/);
+  assert.match(deployScript, /format=xray/);
+  assert.match(deployScript, /format=mihomo/);
+  assert.match(deployScript, /format=singbox/);
+  assert.match(deployScript, /format=clash/);
+  assert.match(deployScript, /automatic-rollback/);
+  assert.match(deployScript, /wrangler rollback/);
+  assert.match(workflow, /SUB_MAX_OPTIMIZED_IPS_PER_NODE/);
 });
 
 test("node jobs use just-in-time enrollment without the control root", () => {

@@ -1,0 +1,147 @@
+mixed-port: 7890
+socks-port: 7891
+redir-port: 7892
+allow-lan: true
+mode: rule
+log-level: warning
+ipv6: false
+external-controller: 127.0.0.1:9090
+find-process-mode: strict
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+sniffer:
+  enable: true
+  sniff:
+    HTTP:
+      ports: [80, 8080-8880]
+      override-destination: true
+    TLS:
+      ports: [443, 8443]
+    QUIC:
+      ports: [443, 8443]
+  skip-domain:
+    - +.push.apple.com
+
+dns:
+  enable: true
+  use-hosts: true
+  use-system-hosts: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  nameserver-policy:
+    rule-set:private_domain:
+      - system
+    rule-set:cn_domain:
+      - https://doh.pub/dns-query
+      - https://dns.alidns.com/dns-query
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+  proxy-server-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback:
+    - https://cloudflare-dns.com/dns-query
+    - https://dns.google/dns-query
+  fallback-filter:
+    geoip: false
+    ipcidr:
+      - 240.0.0.0/4
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - localhost.ptlogin2.qq.com
+    - +.msftconnecttest.com
+    - +.msftncsi.com
+    - +.pool.ntp.org
+    - +.ntp.org
+
+proxies: []
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: []
+  - name: Auto
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 80
+    lazy: true
+    proxies: []
+  - name: Fallback
+    type: fallback
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    lazy: true
+    proxies: []
+
+rule-providers:
+  private_domain:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/private_domain.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/private_domain.mrs
+  cn_domain:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/cn_domain.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/cn_domain.mrs
+  geolocation_not_cn:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/geolocation_not_cn.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/geolocation_not_cn.mrs
+  gfw_domain:
+    type: http
+    behavior: domain
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/gfw_domain.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/gfw_domain.mrs
+  private_ip:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/private_ip.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/private_ip.mrs
+  cn_ip:
+    type: http
+    behavior: ipcidr
+    format: mrs
+    interval: 86400
+    proxy: DIRECT
+    path: ./ruleset/cn_ip.mrs
+    url: __OPUS8_RULE_BASE__/mihomo/cn_ip.mrs
+
+rules:
+  - RULE-SET,private_domain,DIRECT
+  - RULE-SET,private_ip,DIRECT,no-resolve
+  - DOMAIN-SUFFIX,cn,DIRECT
+  - DOMAIN-SUFFIX,中国,DIRECT
+  - DOMAIN-SUFFIX,公司,DIRECT
+  - DOMAIN-SUFFIX,网络,DIRECT
+  - RULE-SET,cn_domain,DIRECT
+  - RULE-SET,gfw_domain,PROXY
+  - RULE-SET,geolocation_not_cn,PROXY
+  - RULE-SET,cn_ip,DIRECT,no-resolve
+  - MATCH,PROXY

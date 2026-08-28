@@ -114,4 +114,4 @@ export interface ActiveUuidsResponse {
   accessPolicies?: UserAccessPolicy[];
 }
 
-export type SubFormat = "base64" | "clash" | "singbox";
+export type SubFormat = "base64" | "mihomo" | "singbox" | "xray";

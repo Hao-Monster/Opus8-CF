@@ -47,10 +47,13 @@ import {
 } from "./db";
 import {
   nodesForUser,
+  MAX_OPTIMIZED_IPS_PER_NODE,
+  normalizeIpLiteral,
   renderSubscription,
-  pickFormat,
+  selectSubscriptionFormat,
   type OptimizedIpsByNode,
 } from "./subscription";
+import { serveSubscriptionRule } from "./subscription-rules";
 import {
   getUnlockHosts,
   putUnlockHosts,
@@ -1446,6 +1449,12 @@ export default {
         return json(resp);
       }
 
+      // ---------- 版本化订阅规则资产 ----------
+      const subscriptionRuleMatch = p.match(/^\/rules\/v1\/(.+)$/);
+      if (subscriptionRuleMatch) {
+        return serveSubscriptionRule(req, env, subscriptionRuleMatch[1]);
+      }
+
       // ---------- 订阅下发 ----------
       const subMatch = p.match(/^\/sub\/([^/]+)$/);
       if (subMatch && m === "GET") {
@@ -1522,24 +1531,39 @@ export default {
         if (nodes.length === 0) {
           return subscriptionError("暂无可用节点，请稍后重试", 503, 60);
         }
-        const fmt = pickFormat(
+        const formatSelection = selectSubscriptionFormat(
           req.headers.get("user-agent") || "",
           url.searchParams.get("format"),
         );
+        if (!formatSelection.ok) {
+          return subscriptionError(
+            formatSelection.message,
+            formatSelection.status,
+          );
+        }
         // GitHub-hosted CFST 只代表运行器所在网络，不能作为终端用户的可用性证明。
         // 默认关闭 IP 展开；只有部署侧显式启用后才会把经过端到端验证的地址写入订阅。
         const optIpsByNode =
           env.USE_OPTIMIZED_IPS === "1"
             ? await getOptimizedIpsByNode(env, nodes)
             : {};
-        const [{ body, contentType }, usage] = await Promise.all([
+        const maxOptimizedIpsPerNode = Number.parseInt(
+          env.SUB_MAX_OPTIMIZED_IPS_PER_NODE || "8",
+          10,
+        );
+        const ruleBaseUrl = `${String(env.SUB_BASE || url.origin).replace(/\/$/, "")}/rules/v1`;
+        const [{ body, contentType, format, templateVersion, entryCount }, usage] = await Promise.all([
           Promise.resolve(
             renderSubscription(
-              fmt,
+              formatSelection.format,
               user,
               nodes,
               optIpsByNode,
               credentialUuid,
+              {
+                ruleBaseUrl,
+                maxOptimizedIpsPerNode,
+              },
             ),
           ),
           principal.trafficLimitBytes > 0
@@ -1557,6 +1581,18 @@ export default {
             "content-type": contentType,
             "cache-control": "private, no-store",
             "x-opus8-subscription-protection": `device-token-v1; hwid=${device.hwid_mode}; credential=${device.credential_mode}`,
+            "x-opus8-subscription-format": format,
+            "x-opus8-template-version": templateVersion,
+            "x-opus8-node-count": String(entryCount),
+            ...(formatSelection.deprecatedAlias
+              ? {
+                  deprecation: "true",
+                  "x-opus8-format-alias": `${formatSelection.deprecatedAlias}; canonical=mihomo`,
+                  ...(env.CLASH_ALIAS_SUNSET
+                    ? { sunset: env.CLASH_ALIAS_SUNSET }
+                    : {}),
+                }
+              : {}),
             "profile-update-interval":
               device.credential_mode === "rotating" ? "6" : "12",
             "subscription-userinfo": subUserInfo(
@@ -1633,7 +1669,16 @@ function normalizeOptimizedNodePool(
   requireUnexpired: boolean,
 ): OptimizedNodeIpPool {
   const now = Date.now();
-  const ips = uniqueCleanStrings(value.ips, /^[0-9a-fA-F.:]+$/, 10);
+  const ips = Array.isArray(value.ips)
+    ? [
+        ...new Set(
+          value.ips
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => normalizeIpLiteral(item))
+            .filter((item): item is string => item !== null),
+        ),
+      ].slice(0, MAX_OPTIMIZED_IPS_PER_NODE)
+    : [];
   const vantages = uniqueCleanStrings(
     value.vantages,
     /^[A-Za-z0-9._:-]+$/,
@@ -1660,7 +1705,7 @@ function normalizeOptimizedNodePool(
   if (
     !Number.isSafeInteger(expiresAt) ||
     (requireUnexpired && expiresAt <= now) ||
-    expiresAt > validatedAt + 24 * 60 * 60_000
+    expiresAt > validatedAt + 12 * 60 * 60_000
   ) {
     throw new Error("优选 IP 有效期无效");
   }
@@ -1744,7 +1789,7 @@ async function getOptimizedIpsByNode(
   const pool = await getOptimizedIpPool(env);
   if (!pool) return {};
   const registeredHostnames = new Map(
-    currentNodes.map((node) => [node.id, node.hostname]),
+    currentNodes.map((node) => [node.id, node.hostname.toLowerCase()]),
   );
   return Object.fromEntries(
     Object.entries(pool.nodes)

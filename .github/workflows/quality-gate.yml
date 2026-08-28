@@ -62,6 +62,9 @@ jobs:
           pnpm --filter @opus8-cf/control-plane test:key-rotation
           pnpm --filter @opus8-cf/control-plane test:d1-backup
           pnpm --filter @opus8-cf/control-plane test:subscription-rate-limit
+          pnpm --filter @opus8-cf/control-plane test:subscription
+          pnpm --filter @opus8-cf/control-plane test:subscription-rules
+          pnpm --filter @opus8-cf/control-plane test:optimized-ip
           pnpm --filter @opus8-cf/control-plane test:device-credentials
           pnpm --filter @opus8-cf/control-plane test:usage-aggregation
           pnpm --filter @opus8-cf/control-plane test:operations-hardening

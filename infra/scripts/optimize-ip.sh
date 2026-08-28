@@ -131,6 +131,7 @@ local_smoke() {
     --target-port 80
     --expect-status 0
     --timeout 12
+    --json
   )
   [ -n "$connect_host" ] && args+=(--connect-host "$connect_host")
   "${args[@]}" >"$log_file" 2>&1
@@ -147,6 +148,7 @@ remote_smoke() {
     --target-port 80
     --expect-status 0
     --timeout 12
+    --json
   )
   [ -n "$connect_host" ] && args+=(--connect-host "$connect_host")
   printf -v remote_command '%q ' "${args[@]}"
@@ -272,18 +274,18 @@ for raw in open(sys.argv[1], encoding="utf-8"):
         continue
     seen.add(candidate)
     print(candidate)
-    if len(seen) >= 8:
+    if len(seen) >= 64:
         break
 PY
 )
 echo "OK cfst-candidates count=${#CFST_CANDIDATES[@]}"
 
 local_candidate_ok() {
-  local ip="$1" node_id="$2" node_host="$3" transport_path="$4" reason
-  if local_smoke "$node_host" "$transport_path" "$ip" "$WORK_DIR/local-candidate.log"; then
+  local ip="$1" node_id="$2" node_host="$3" transport_path="$4" log_file="$5" reason
+  if local_smoke "$node_host" "$transport_path" "$ip" "$log_file"; then
     return 0
   fi
-  reason="$(tail -n 1 "$WORK_DIR/local-candidate.log" |
+  reason="$(tail -n 1 "$log_file" |
     tr '\r\n\t' ' ' |
     cut -c1-240)"
   echo "WARN candidate=$ip vantage=github-runner node=$node_id reason=$reason"
@@ -291,11 +293,11 @@ local_candidate_ok() {
 }
 
 remote_candidate_ok() {
-  local ip="$1" node_id="$2" node_host="$3" transport_path="$4" reason
-  if remote_smoke "$node_host" "$transport_path" "$ip" "$WORK_DIR/remote-candidate.log"; then
+  local ip="$1" node_id="$2" node_host="$3" transport_path="$4" log_file="$5" reason
+  if remote_smoke "$node_host" "$transport_path" "$ip" "$log_file"; then
     return 0
   fi
-  reason="$(tail -n 1 "$WORK_DIR/remote-candidate.log" |
+  reason="$(tail -n 1 "$log_file" |
     tr '\r\n\t' ' ' |
     cut -c1-240)"
   echo "WARN candidate=$ip vantage=landing-vps node=$node_id reason=$reason"
@@ -332,21 +334,53 @@ for raw in open(sys.argv[1], encoding="utf-8"):
         continue
     seen.add(candidate)
     print(candidate)
-    if len(seen) >= 10:
+    if len(seen) >= 32:
         break
 PY
   )
   echo "OK node-candidates node=$node_id count=${#NODE_CANDIDATES[@]}"
 
   VALIDATED=()
-  for ip in "${NODE_CANDIDATES[@]}"; do
-    if local_candidate_ok "$ip" "$node_id" "$node_host" "$transport_path" &&
-      remote_candidate_ok "$ip" "$node_id" "$node_host" "$transport_path"; then
-      VALIDATED+=("$ip")
-      echo "OK candidate=$ip node=$node_id vantages=2"
-    fi
-    [ "${#VALIDATED[@]}" -ge 2 ] && break
+  NODE_RESULTS="$WORK_DIR/node-${node_id}-results"
+  mkdir -p "$NODE_RESULTS"
+  SELECTED_JSON='[]'
+  PROBE_TARGET=8
+  PROBE_BATCH_SIZE=4
+  candidate_index=0
+  while [ "$candidate_index" -lt "${#NODE_CANDIDATES[@]}" ]; do
+    probe_pids=()
+    for offset in $(seq 0 $((PROBE_BATCH_SIZE - 1))); do
+      index=$((candidate_index + offset))
+      [ "$index" -lt "${#NODE_CANDIDATES[@]}" ] || break
+      ip="${NODE_CANDIDATES[$index]}"
+      (
+        local_log="$NODE_RESULTS/$index-local.json"
+        remote_log="$NODE_RESULTS/$index-remote.json"
+        result_file="$NODE_RESULTS/$index.json"
+        if local_candidate_ok "$ip" "$node_id" "$node_host" "$transport_path" "$local_log" &&
+          remote_candidate_ok "$ip" "$node_id" "$node_host" "$transport_path" "$remote_log"; then
+          local_ms="$(jq -er 'select(.ok == true) | .elapsedMs' "$local_log")"
+          remote_ms="$(jq -er 'select(.ok == true) | .elapsedMs' "$remote_log")"
+          jq -nc \
+            --arg ip "$ip" \
+            --argjson localMs "$local_ms" \
+            --argjson remoteMs "$remote_ms" \
+            '{ip:$ip,localMs:$localMs,remoteMs:$remoteMs}' >"$result_file"
+          echo "OK candidate=$ip node=$node_id vantages=2 localMs=$local_ms remoteMs=$remote_ms"
+        fi
+        exit 0
+      ) &
+      probe_pids+=("$!")
+    done
+    for probe_pid in "${probe_pids[@]}"; do
+      wait "$probe_pid" || true
+    done
+    SELECTED_JSON="$(node infra/scripts/optimized-ip-selection.mjs \
+      "$NODE_RESULTS" "$PROBE_TARGET")"
+    [ "$(printf '%s' "$SELECTED_JSON" | jq 'length')" -ge "$PROBE_TARGET" ] && break
+    candidate_index=$((candidate_index + PROBE_BATCH_SIZE))
   done
+  mapfile -t VALIDATED < <(printf '%s' "$SELECTED_JSON" | jq -r '.[]')
   if [ "${#VALIDATED[@]}" -gt 0 ]; then
     IPS_JSON="$(printf '%s\n' "${VALIDATED[@]}" | jq -R . | jq -sc .)"
     SAFE_NODE_IPS="$(printf '%s' "$SAFE_NODE_IPS" | jq -c \
@@ -374,7 +408,7 @@ fi
 
 echo "STEP push-to-control"
 NOW_MS="$(date +%s%3N)"
-EXPIRES_MS=$((NOW_MS + 8 * 60 * 60 * 1000))
+EXPIRES_MS=$((NOW_MS + 12 * 60 * 60 * 1000))
 POOL_NODES="$(printf '%s' "$SAFE_NODE_IPS" | jq -c \
   --argjson validatedAt "$NOW_MS" \
   --argjson expiresAt "$EXPIRES_MS" \
@@ -396,7 +430,7 @@ RESPONSE="$(curl -fsS --max-time 20 -X POST \
 printf '%s' "$RESPONSE" | jq -e \
   --argjson nodeCount "$SAFE_NODE_COUNT" \
   '.ok == true and .nodeCount == $nodeCount' >/dev/null
-echo "OK pushed nodes=$SAFE_NODE_COUNT ips=$SAFE_IP_COUNT expiresHours=8"
+echo "OK pushed nodes=$SAFE_NODE_COUNT ips=$SAFE_IP_COUNT expiresHours=12"
 
 echo "STEP verify-subscription"
 curl -fsS --max-time 30 "$PROBE_SUB_URL" |
