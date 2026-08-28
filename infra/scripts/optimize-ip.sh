@@ -9,9 +9,6 @@ cd "$WS"
 
 : "${CONTROL_PLANE_URL:?CONTROL_PLANE_URL is required}"
 : "${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}"
-: "${VPS_HOST:?VPS_HOST is required for two-vantage validation}"
-: "${VPS_SSH_USER:?VPS_SSH_USER is required for two-vantage validation}"
-: "${VPS_SSH_PASSWORD:?VPS_SSH_PASSWORD is required for two-vantage validation}"
 
 for command in curl jq node python3 sha256sum tar; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -21,10 +18,18 @@ for command in curl jq node python3 sha256sum tar; do
 done
 
 VPS_SSH_PORT="${VPS_SSH_PORT:-22}"
+VPS_HOST="${VPS_HOST:-}"
+VPS_SSH_USER="${VPS_SSH_USER:-}"
+VPS_SSH_PASSWORD="${VPS_SSH_PASSWORD:-}"
+LANDING_SOCKS_HOST="${LANDING_SOCKS_HOST:-${VPS_HOST:-}}"
+LANDING_SOCKS_PORT="${LANDING_SOCKS_PORT:-}"
+LANDING_SOCKS_USER="${LANDING_SOCKS_USER:-}"
+LANDING_SOCKS_PASSWORD="${LANDING_SOCKS_PASSWORD:-}"
 WORK_DIR="$(mktemp -d)"
 ADMIN_TOKEN=""
 USER_ID=""
 REMOTE_READY=0
+REMOTE_MODE=""
 REMOTE_SMOKE_PATH=""
 SSH_BASE=()
 SCP_BASE=()
@@ -35,7 +40,7 @@ cleanup() {
       "$CONTROL_PLANE_URL/api/users/$USER_ID" \
       -H "authorization: Bearer $ADMIN_TOKEN" >/dev/null 2>&1 || true
   fi
-  if [ "$REMOTE_READY" = "1" ] && [ -n "$REMOTE_SMOKE_PATH" ]; then
+  if [ "$REMOTE_MODE" = "ssh" ] && [ -n "$REMOTE_SMOKE_PATH" ]; then
     "${SSH_BASE[@]}" "rm -f -- '$REMOTE_SMOKE_PATH'" >/dev/null 2>&1 || true
   fi
   case "$WORK_DIR" in
@@ -45,37 +50,70 @@ cleanup() {
 trap cleanup EXIT
 
 echo "STEP prepare-vantages"
-command -v sshpass >/dev/null 2>&1 || {
-  echo "ERROR sshpass-not-installed"
-  exit 10
-}
-export SSHPASS="$VPS_SSH_PASSWORD"
-SSH_BASE=(
-  sshpass -e ssh
-  -p "$VPS_SSH_PORT"
-  -o ConnectTimeout=12
-  -o StrictHostKeyChecking=accept-new
-  -o ServerAliveInterval=10
-  -o ServerAliveCountMax=2
-  "$VPS_SSH_USER@$VPS_HOST"
-)
-SCP_BASE=(
-  sshpass -e scp
-  -P "$VPS_SSH_PORT"
-  -o ConnectTimeout=12
-  -o StrictHostKeyChecking=accept-new
-)
 REMOTE_TAG="$(printf '%s' "${GITHUB_RUN_ID:-manual}-${GITHUB_RUN_ATTEMPT:-1}" |
   tr -cd 'A-Za-z0-9._-')"
 REMOTE_SMOKE_PATH="/tmp/opus8-optimize-smoke-${REMOTE_TAG}.py"
-if ! "${SSH_BASE[@]}" 'command -v python3 >/dev/null' >/dev/null 2>&1 ||
-  ! "${SCP_BASE[@]}" infra/scripts/smoke-vless.py \
-    "$VPS_SSH_USER@$VPS_HOST:$REMOTE_SMOKE_PATH" >/dev/null 2>&1; then
+
+if [ -n "$LANDING_SOCKS_HOST" ] \
+  && [ -n "$LANDING_SOCKS_PORT" ] \
+  && [ -n "$LANDING_SOCKS_USER" ] \
+  && [ -n "$LANDING_SOCKS_PASSWORD" ]; then
+  if ! printf '%s' "$LANDING_SOCKS_PORT" | grep -qE '^[1-9][0-9]{0,4}$' \
+    || [ "$LANDING_SOCKS_PORT" -gt 65535 ]; then
+    echo "ERROR invalid-landing-socks-port"
+    exit 10
+  fi
+  LANDING_PROXY_IP=$(curl -fsS --connect-timeout 8 --max-time 15 \
+    --proxy "socks5h://${LANDING_SOCKS_HOST}:${LANDING_SOCKS_PORT}" \
+    --proxy-user "${LANDING_SOCKS_USER}:${LANDING_SOCKS_PASSWORD}" \
+    https://api.ipify.org 2>/dev/null || true)
+  if printf '%s' "$LANDING_PROXY_IP" \
+    | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    REMOTE_READY=1
+    REMOTE_MODE=socks5
+    echo "OK landing-vantage mode=socks5"
+  else
+    echo "WARN landing-socks-vantage-unavailable"
+  fi
+else
+  echo "WARN landing-socks-vantage-not-configured"
+fi
+unset LANDING_PROXY_IP
+
+if [ "$REMOTE_READY" != "1" ] \
+  && [ -n "$VPS_HOST" ] \
+  && [ -n "$VPS_SSH_USER" ] \
+  && [ -n "$VPS_SSH_PASSWORD" ] \
+  && command -v sshpass >/dev/null 2>&1; then
+  export SSHPASS="$VPS_SSH_PASSWORD"
+  SSH_BASE=(
+    sshpass -e ssh
+    -p "$VPS_SSH_PORT"
+    -o ConnectTimeout=12
+    -o StrictHostKeyChecking=accept-new
+    -o ServerAliveInterval=10
+    -o ServerAliveCountMax=2
+    "$VPS_SSH_USER@$VPS_HOST"
+  )
+  SCP_BASE=(
+    sshpass -e scp
+    -P "$VPS_SSH_PORT"
+    -o ConnectTimeout=12
+    -o StrictHostKeyChecking=accept-new
+  )
+  if "${SSH_BASE[@]}" 'command -v python3 >/dev/null' >/dev/null 2>&1 \
+    && "${SCP_BASE[@]}" infra/scripts/smoke-vless.py \
+      "$VPS_SSH_USER@$VPS_HOST:$REMOTE_SMOKE_PATH" >/dev/null 2>&1; then
+    REMOTE_READY=1
+    REMOTE_MODE=ssh
+    echo "OK landing-vantage mode=ssh"
+  fi
+fi
+if [ "$REMOTE_READY" != "1" ]; then
   echo "ERROR landing-vps-vantage-unavailable"
   exit 10
 fi
-REMOTE_READY=1
-echo "OK vantages=github-runner,landing-vps"
+echo "OK vantages=github-runner,landing-vps mode=$REMOTE_MODE"
 
 echo "STEP login"
 LOGIN_RESPONSE="$(curl -fsS --max-time 20 -X POST \
@@ -139,9 +177,8 @@ local_smoke() {
 
 remote_smoke() {
   local node_host="$1" transport_path="$2" connect_host="${3:-}" log_file="$4"
-  local remote_command
   local args=(
-    python3 "$REMOTE_SMOKE_PATH"
+    python3 infra/scripts/smoke-vless.py
     --url "wss://${node_host}${transport_path}?ed=2560"
     --uuid "$PROBE_UUID"
     --target example.com
@@ -151,6 +188,20 @@ remote_smoke() {
     --json
   )
   [ -n "$connect_host" ] && args+=(--connect-host "$connect_host")
+  if [ "$REMOTE_MODE" = "socks5" ]; then
+    args+=(
+      --proxy-host "$LANDING_SOCKS_HOST"
+      --proxy-port "$LANDING_SOCKS_PORT"
+      --proxy-username-env OPUS8_SMOKE_PROXY_USERNAME
+      --proxy-password-env OPUS8_SMOKE_PROXY_PASSWORD
+    )
+    OPUS8_SMOKE_PROXY_USERNAME="$LANDING_SOCKS_USER" \
+      OPUS8_SMOKE_PROXY_PASSWORD="$LANDING_SOCKS_PASSWORD" \
+      "${args[@]}" >"$log_file" 2>&1
+    return
+  fi
+  args[1]="$REMOTE_SMOKE_PATH"
+  local remote_command
   printf -v remote_command '%q ' "${args[@]}"
   "${SSH_BASE[@]}" "$remote_command" >"$log_file" 2>&1
 }
@@ -314,8 +365,10 @@ for entry in "${BASELINE_NODES[@]}"; do
   : >"$NODE_RAW"
   getent ahostsv4 "$node_host" 2>/dev/null |
     awk '{print $1}' >>"$NODE_RAW" || true
-  "${SSH_BASE[@]}" "getent ahostsv4 '$node_host' 2>/dev/null | tr -s ' ' | cut -d' ' -f1" \
-    >>"$NODE_RAW" 2>/dev/null || true
+  if [ "$REMOTE_MODE" = "ssh" ]; then
+    "${SSH_BASE[@]}" "getent ahostsv4 '$node_host' 2>/dev/null | tr -s ' ' | cut -d' ' -f1" \
+      >>"$NODE_RAW" 2>/dev/null || true
+  fi
   printf '%s\n' "${CFST_CANDIDATES[@]}" >>"$NODE_RAW"
 
   mapfile -t NODE_CANDIDATES < <(

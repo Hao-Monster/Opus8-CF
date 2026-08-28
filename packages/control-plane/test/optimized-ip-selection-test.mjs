@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +52,13 @@ assert.match(optimizerScript, /PROBE_BATCH_SIZE=4/, "probe concurrency must stay
 assert.match(optimizerScript, /optimized-ip-selection\.mjs/, "publish path must use scored selection");
 assert.match(optimizerScript, /12 \* 60 \* 60 \* 1000/, "published pool TTL must be 12 hours");
 assert.match(optimizerWorkflow, /cron:\s*['"]17 \*\/4 \* \* \*['"]/, "optimizer must run every four hours");
+assert.match(
+  optimizerWorkflow,
+  /LANDING_SOCKS_PORT:\s*\$\{\{ vars\.SERVICES_PORT \}\}/,
+  "optimizer must receive the configured landing SOCKS port",
+);
+assert.match(optimizerScript, /REMOTE_MODE=socks5/, "SOCKS must be a supported landing vantage");
+assert.match(optimizerScript, /--proxy-host/, "landing vantage must route VLESS through SOCKS");
 assert.deepEqual(
   selected.map((record) => record.scoreMs),
   [30, 40, 50, 60, 70, 80, 80, 90],
@@ -65,7 +73,6 @@ try {
       writeFile(join(resultsDir, `${index}.json`), JSON.stringify(record)),
     ),
   );
-  const { spawnSync } = await import("node:child_process");
   const cli = spawnSync(
     process.execPath,
     [
@@ -80,5 +87,13 @@ try {
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }
+
+const python = process.platform === "win32" ? "python" : "python3";
+const proxyTest = spawnSync(
+  python,
+  [fileURLToPath(new URL("../../../infra/scripts/smoke-vless-proxy-test.py", import.meta.url))],
+  { encoding: "utf8" },
+);
+assert.equal(proxyTest.status, 0, proxyTest.stderr || proxyTest.stdout);
 
 console.log("OK optimized IP selection tests");

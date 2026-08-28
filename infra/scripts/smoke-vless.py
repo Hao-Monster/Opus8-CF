@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -26,6 +27,84 @@ def recv_exact(sock: ssl.SSLSocket, count: int) -> bytes:
             raise RuntimeError("unexpected EOF")
         out.extend(chunk)
     return bytes(out)
+
+
+def encode_socks5_destination(host: str) -> bytes:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        domain = host.encode("idna")
+        if not domain or len(domain) > 255:
+            raise ValueError("SOCKS5 destination hostname must be 1-255 bytes")
+        return b"\x03" + bytes([len(domain)]) + domain
+    if address.version == 4:
+        return b"\x01" + address.packed
+    return b"\x04" + address.packed
+
+
+def open_socks5_connection(
+    proxy_host: str,
+    proxy_port: int,
+    destination_host: str,
+    destination_port: int,
+    username: str | None,
+    password: str | None,
+    timeout: float,
+) -> socket.socket:
+    if not 1 <= proxy_port <= 65535:
+        raise ValueError("SOCKS5 proxy port must be between 1 and 65535")
+    if not 1 <= destination_port <= 65535:
+        raise ValueError("SOCKS5 destination port must be between 1 and 65535")
+    authenticated = username is not None or password is not None
+    if authenticated and (not username or not password):
+        raise ValueError("SOCKS5 username and password must both be non-empty")
+
+    connection = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
+    connection.settimeout(timeout)
+    try:
+        method = 2 if authenticated else 0
+        connection.sendall(bytes([5, 1, method]))
+        selected = recv_exact(connection, 2)
+        if selected != bytes([5, method]):
+            raise RuntimeError("SOCKS5 proxy rejected the required authentication method")
+
+        if authenticated:
+            encoded_username = username.encode("utf-8")
+            encoded_password = password.encode("utf-8")
+            if len(encoded_username) > 255 or len(encoded_password) > 255:
+                raise ValueError("SOCKS5 credentials must not exceed 255 bytes")
+            connection.sendall(
+                b"\x01"
+                + bytes([len(encoded_username)])
+                + encoded_username
+                + bytes([len(encoded_password)])
+                + encoded_password
+            )
+            if recv_exact(connection, 2) != b"\x01\x00":
+                raise RuntimeError("SOCKS5 proxy authentication failed")
+
+        destination = encode_socks5_destination(destination_host)
+        connection.sendall(
+            b"\x05\x01\x00" + destination + struct.pack("!H", destination_port)
+        )
+        version, result, reserved, address_type = recv_exact(connection, 4)
+        if version != 5 or reserved != 0:
+            raise RuntimeError("invalid SOCKS5 CONNECT response")
+        if result != 0:
+            raise RuntimeError(f"SOCKS5 CONNECT failed with code {result}")
+        if address_type == 1:
+            recv_exact(connection, 4)
+        elif address_type == 3:
+            recv_exact(connection, recv_exact(connection, 1)[0])
+        elif address_type == 4:
+            recv_exact(connection, 16)
+        else:
+            raise RuntimeError("invalid SOCKS5 response address type")
+        recv_exact(connection, 2)
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 
 def send_ws_frame(sock: ssl.SSLSocket, payload: bytes, opcode: int = 2) -> None:
@@ -112,6 +191,10 @@ def run(
     expect_status: int,
     connect_host: str | None = None,
     connect_port: int | None = None,
+    proxy_host: str | None = None,
+    proxy_port: int | None = None,
+    proxy_username: str | None = None,
+    proxy_password: str | None = None,
 ) -> None:
     parsed = urlsplit(url)
     if parsed.scheme != "wss" or not parsed.hostname:
@@ -127,7 +210,20 @@ def run(
     context = ssl.create_default_context()
     # The TCP destination may be an optimized Cloudflare anycast IP while TLS
     # SNI and the WebSocket Host header must continue to use the node hostname.
-    with socket.create_connection((socket_host, socket_port), timeout=timeout) as raw:
+    raw_connection = (
+        open_socks5_connection(
+            proxy_host,
+            proxy_port or 0,
+            socket_host,
+            socket_port,
+            proxy_username,
+            proxy_password,
+            timeout,
+        )
+        if proxy_host
+        else socket.create_connection((socket_host, socket_port), timeout=timeout)
+    )
+    with raw_connection as raw:
         with context.wrap_socket(raw, server_hostname=host) as sock:
             sock.settimeout(timeout)
             websocket_upgrade(sock, host, path)
@@ -171,6 +267,19 @@ def main() -> int:
     )
     parser.add_argument("--connect-port", type=int)
     parser.add_argument(
+        "--proxy-host",
+        help="Route the TCP connection through this SOCKS5 proxy host.",
+    )
+    parser.add_argument("--proxy-port", type=int)
+    parser.add_argument(
+        "--proxy-username-env",
+        help="Environment variable containing the SOCKS5 username.",
+    )
+    parser.add_argument(
+        "--proxy-password-env",
+        help="Environment variable containing the SOCKS5 password.",
+    )
+    parser.add_argument(
         "--expect-status",
         type=int,
         default=200,
@@ -182,6 +291,23 @@ def main() -> int:
         help="Emit a machine-readable result including full probe latency.",
     )
     args = parser.parse_args()
+    if bool(args.proxy_host) != bool(args.proxy_port):
+        parser.error("--proxy-host and --proxy-port must be provided together")
+    if bool(args.proxy_username_env) != bool(args.proxy_password_env):
+        parser.error(
+            "--proxy-username-env and --proxy-password-env must be provided together"
+        )
+    for environment_name in (args.proxy_username_env, args.proxy_password_env):
+        if environment_name and environment_name not in os.environ:
+            parser.error(
+                f"proxy credential environment variable is not set: {environment_name}"
+            )
+    proxy_username = (
+        os.environ[args.proxy_username_env] if args.proxy_username_env else None
+    )
+    proxy_password = (
+        os.environ[args.proxy_password_env] if args.proxy_password_env else None
+    )
     started = time.monotonic()
     try:
         run(
@@ -193,6 +319,10 @@ def main() -> int:
             args.expect_status,
             args.connect_host,
             args.connect_port,
+            args.proxy_host,
+            args.proxy_port,
+            proxy_username,
+            proxy_password,
         )
     except Exception as exc:
         elapsed_ms = round((time.monotonic() - started) * 1000, 3)

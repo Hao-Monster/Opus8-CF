@@ -23,6 +23,10 @@ jobs:
       VPS_SSH_USER: ${{ secrets.SERVICES_USER }}
       VPS_SSH_PASSWORD: ${{ secrets.SERVICES_CODE }}
       VPS_SSH_PORT: ${{ secrets.SERVICES_SSH_PORT }}
+      LANDING_SOCKS_HOST: ${{ secrets.SERVICES_IP }}
+      LANDING_SOCKS_PORT: ${{ vars.SERVICES_PORT }}
+      LANDING_SOCKS_USER: ${{ secrets.SOCKS_USER }}
+      LANDING_SOCKS_PASSWORD: ${{ secrets.SOCKS_PASSWORD }}
       CLOUDFLARE_PROXY_PERMISSION_REF: ${{ secrets.CLOUDFLARE_PROXY_PERMISSION_REF }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -53,6 +57,9 @@ jobs:
           echo "::add-mask::${VPS_HOST:-}"
           echo "::add-mask::${VPS_SSH_USER:-}"
           echo "::add-mask::${VPS_SSH_PASSWORD:-}"
+          echo "::add-mask::${LANDING_SOCKS_HOST:-}"
+          echo "::add-mask::${LANDING_SOCKS_USER:-}"
+          echo "::add-mask::${LANDING_SOCKS_PASSWORD:-}"
           sudo apt-get update -qq
           sudo apt-get install -y -qq sshpass
       - name: Optimize CF IPs
