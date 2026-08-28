@@ -25,6 +25,11 @@ LANDING_SOCKS_HOST="${LANDING_SOCKS_HOST:-${VPS_HOST:-}}"
 LANDING_SOCKS_PORT="${LANDING_SOCKS_PORT:-}"
 LANDING_SOCKS_USER="${LANDING_SOCKS_USER:-}"
 LANDING_SOCKS_PASSWORD="${LANDING_SOCKS_PASSWORD:-}"
+SUB_MAX_OPTIMIZED_IPS_PER_NODE="${SUB_MAX_OPTIMIZED_IPS_PER_NODE:-8}"
+if ! printf '%s' "$SUB_MAX_OPTIMIZED_IPS_PER_NODE" | grep -qE '^[1-8]$'; then
+  echo "ERROR invalid-sub-max-optimized-ips-per-node"
+  exit 2
+fi
 WORK_DIR="$(mktemp -d)"
 ADMIN_TOKEN=""
 USER_ID=""
@@ -486,37 +491,28 @@ printf '%s' "$RESPONSE" | jq -e \
 echo "OK pushed nodes=$SAFE_NODE_COUNT ips=$SAFE_IP_COUNT expiresHours=12"
 
 echo "STEP verify-subscription"
-curl -fsS --max-time 30 "$PROBE_SUB_URL" |
-  base64 -d >"$WORK_DIR/subscription.txt"
 printf '%s' "$SAFE_NODE_IPS" >"$WORK_DIR/expected-node-ips.json"
-node - "$WORK_DIR/subscription.txt" "$WORK_DIR/expected-node-ips.json" <<'NODE'
-const fs = require("node:fs");
-const lines = fs
-  .readFileSync(process.argv[2], "utf8")
-  .split(/\r?\n/)
-  .filter(Boolean);
-const expected = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
-for (const [nodeId, node] of Object.entries(expected)) {
-  for (const ip of node.ips) {
-    const matched = lines.some((line) => {
-      try {
-        const url = new URL(line);
-        return (
-          url.hostname === ip &&
-          url.searchParams.get("sni") === node.hostname &&
-          url.searchParams.get("host") === node.hostname &&
-          url.searchParams.get("path") === node.transportPath + "?ed=2560"
-        );
-      } catch {
-        return false;
-      }
-    });
-    if (!matched) {
-      console.error(`subscription mapping missing for node=${nodeId} ip=${ip}`);
-      process.exit(1);
-    }
-  }
-}
-NODE
-echo "OK subscription-verified nodes=$SAFE_NODE_COUNT ips=$SAFE_IP_COUNT"
+SUBSCRIPTION_VERIFIED=0
+for attempt in $(seq 1 12); do
+  if curl -fsS --max-time 30 "$PROBE_SUB_URL" \
+    | base64 -d >"$WORK_DIR/subscription.txt" \
+    && node infra/scripts/verify-optimized-subscription.mjs \
+      "$WORK_DIR/subscription.txt" \
+      "$WORK_DIR/expected-node-ips.json" \
+      "$SUB_MAX_OPTIMIZED_IPS_PER_NODE" \
+      >"$WORK_DIR/subscription-verification.json" \
+      2>"$WORK_DIR/subscription-verification.log"; then
+    SUBSCRIPTION_VERIFIED=1
+    break
+  fi
+  [ "$attempt" -lt 12 ] && sleep 5
+done
+if [ "$SUBSCRIPTION_VERIFIED" != "1" ]; then
+  echo "ERROR subscription-verification"
+  tail -n 3 "$WORK_DIR/subscription-verification.log" 2>/dev/null || true
+  exit 14
+fi
+VERIFIED_SUBSCRIPTION_IPS=$(jq -er '.ipCount' \
+  "$WORK_DIR/subscription-verification.json")
+echo "OK subscription-verified nodes=$SAFE_NODE_COUNT ips=$VERIFIED_SUBSCRIPTION_IPS limit=$SUB_MAX_OPTIMIZED_IPS_PER_NODE"
 echo "DONE publishedNodes=$SAFE_NODE_COUNT publishedIps=$SAFE_IP_COUNT"

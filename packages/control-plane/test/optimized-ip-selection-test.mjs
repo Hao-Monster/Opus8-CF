@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { selectValidatedCandidates } from "../../../infra/scripts/optimized-ip-selection.mjs";
+import { verifyOptimizedSubscription } from "../../../infra/scripts/verify-optimized-subscription.mjs";
 
 const records = [
   { ip: "203.0.113.9", localMs: 70, remoteMs: 80 },
@@ -57,8 +58,18 @@ assert.match(
   /LANDING_SOCKS_PORT:\s*\$\{\{ vars\.SERVICES_PORT \}\}/,
   "optimizer must receive the configured landing SOCKS port",
 );
+assert.match(
+  optimizerWorkflow,
+  /SUB_MAX_OPTIMIZED_IPS_PER_NODE:\s*\$\{\{ vars\.SUB_MAX_OPTIMIZED_IPS_PER_NODE \|\| '3' \}\}/,
+  "optimizer verification must use the deployed subscription expansion limit",
+);
 assert.match(optimizerScript, /REMOTE_MODE=socks5/, "SOCKS must be a supported landing vantage");
 assert.match(optimizerScript, /--proxy-host/, "landing vantage must route VLESS through SOCKS");
+assert.match(
+  optimizerScript,
+  /verify-optimized-subscription\.mjs/,
+  "post-publish verification must enforce the deployed expansion limit",
+);
 assert.deepEqual(
   selected.map((record) => record.scoreMs),
   [30, 40, 50, 60, 70, 80, 80, 90],
@@ -95,5 +106,44 @@ const proxyTest = spawnSync(
   { encoding: "utf8" },
 );
 assert.equal(proxyTest.status, 0, proxyTest.stderr || proxyTest.stdout);
+
+const expectedPool = {
+  node1: {
+    hostname: "node1.example.com",
+    transportPath: "/ws/node1",
+    ips: ["203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4"],
+  },
+};
+const subscriptionFor = (ips) => ips.map((ip) => {
+  const query = new URLSearchParams({
+    encryption: "none",
+    security: "tls",
+    sni: "node1.example.com",
+    host: "node1.example.com",
+    type: "ws",
+    path: "/ws/node1?ed=2560",
+  });
+  return `vless://00000000-0000-4000-8000-000000000000@${ip}:443?${query}`;
+}).join("\n");
+assert.deepEqual(
+  verifyOptimizedSubscription(
+    subscriptionFor(expectedPool.node1.ips.slice(0, 3)),
+    expectedPool,
+    3,
+  ),
+  { nodeCount: 1, ipCount: 3 },
+);
+assert.throws(
+  () => verifyOptimizedSubscription(
+    subscriptionFor(expectedPool.node1.ips.slice(0, 2)),
+    expectedPool,
+    3,
+  ),
+  /expected 3 optimized IPs, received 2/,
+);
+assert.throws(
+  () => verifyOptimizedSubscription(subscriptionFor(["203.0.113.99"]), expectedPool, 1),
+  /unvalidated optimized IP/,
+);
 
 console.log("OK optimized IP selection tests");
