@@ -226,7 +226,7 @@ remote_probe() {
   REMOTE_PROBE_OK=false
   REMOTE_PROBE_LATENCY=null
   REMOTE_PROBE_ERROR="vantage unavailable"
-  [ "$REMOTE_READY" = "1" ] || return
+  [ "$REMOTE_READY" = "1" ] || return 0
   log_file="$WORK_DIR/remote-probe.log"
 
   for attempt in 1 2; do

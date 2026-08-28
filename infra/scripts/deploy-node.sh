@@ -10,7 +10,8 @@
 #   NODE_TRANSPORT_PATH (可选；缺省时按节点稳定派生)
 #   TRANSPORT_MIGRATION_MODE=canary|strict（缺省 canary，上一条路径保留 72 小时）
 #   WORKER_PLACEMENT_HOST（可选；Targeted Placement 的 host:port）
-#   SERVICES_IP / SOCKS_USER / SOCKS_PASSWORD  (SOCKS5，可缺省 -> 纯 CF 出口)
+#   SERVICES_IP / SERVICES_PORT / SOCKS_USER / SOCKS_PASSWORD
+#     (SOCKS5；端口可缺省自动探测，显式端口不可用时失败关闭)
 #   VPS_HOST / VPS_SSH_USER / VPS_SSH_PASSWORD / VPS_SSH_PORT
 #     (可选，仅用于部署后的第二视角冒烟)
 set -euo pipefail
@@ -45,23 +46,22 @@ WORKER_NAME="opus8cf-node-${NODE_ID}${NODE_DEPLOY_SUFFIX}"
 OPUS8_BUILD_ID="${GITHUB_SHA:-manual}-${GITHUB_RUN_ID:-0}-${GITHUB_RUN_ATTEMPT:-0}"
 NODE_DEPLOY_OPERATION="${NODE_DEPLOY_OPERATION:-maintenance}"
 WORKER_PLACEMENT_HOST="${WORKER_PLACEMENT_HOST:-}"
-normalize_worker_placement_host() {
-  WORKER_PLACEMENT_CANDIDATE="$1" node -e '
-    const value=String(process.env.WORKER_PLACEMENT_CANDIDATE||"").trim();
-    const match=value.match(/^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?):([0-9]{1,5})$/);
-    const port=match?Number(match[2]):0;
-    if(!match||port<1||port>65535) process.exit(1);
-    process.stdout.write(value);
-  '
-}
+if ! WORKER_PLACEMENT_HOST=$(WORKER_PLACEMENT_HOST="$WORKER_PLACEMENT_HOST" \
+  node "$REPO_ROOT/infra/scripts/worker-placement-host.mjs"); then
+  exit 9
+fi
 WORKER_PLACEMENT_CONFIG=""
 if [ -n "$WORKER_PLACEMENT_HOST" ]; then
-  if ! WORKER_PLACEMENT_HOST=$(normalize_worker_placement_host "$WORKER_PLACEMENT_HOST"); then
-    echo "ERROR invalid-worker-placement-host"
-    exit 9
-  fi
   WORKER_PLACEMENT_CONFIG=$(printf '[placement]\nhost = "%s"\n' "$WORKER_PLACEMENT_HOST")
   echo "INFO targeted-placement host=$WORKER_PLACEMENT_HOST"
+fi
+SERVICES_PORT="${SERVICES_PORT:-}"
+if [ -n "$SERVICES_PORT" ] && {
+  ! printf '%s' "$SERVICES_PORT" | grep -qE '^[1-9][0-9]{0,4}$' \
+    || [ "$SERVICES_PORT" -gt 65535 ];
+}; then
+  echo "ERROR invalid-services-port"
+  exit 9
 fi
 case "$NODE_DEPLOY_OPERATION" in
   maintenance) COMPLIANCE_GATE_MODE=node-maintenance ;;
@@ -195,11 +195,42 @@ echo "OK policy-test"
 echo "STEP probe-landing"
 PORT=""; LAND=""; PTYPE=""
 if [ -n "${SERVICES_IP:-}" ]; then
-  # 快速路径：先试已知/常见端口，命中即跳过全端口扫描
-  for p in ${SERVICES_PORT:-} 40008 1080 1081 7890 8388 1088; do
+  probe_socks5_port() {
+    local p="$1" out outn
+    outn=$(curl -s -x "socks5h://${SERVICES_IP}:$p" \
+      --connect-timeout 6 --max-time 12 https://api.ipify.org 2>/dev/null || true)
+    if echo "$outn" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+      if [ -n "${SOCKS_USER:-}" ] || [ -n "${SOCKS_PASSWORD:-}" ]; then
+        echo "WARN landing-port=$p rejected=socks5-noauth exit=$outn"
+        return 1
+      fi
+      PORT=$p; PTYPE=socks5-noauth
+      echo "OK landing-port=$p type=socks5(no-auth) exit=$outn"
+      return 0
+    fi
+    out=$(curl -s -x "socks5h://${SERVICES_IP}:$p" \
+      --proxy-user "${SOCKS_USER:-}:${SOCKS_PASSWORD:-}" \
+      --connect-timeout 6 --max-time 12 https://api.ipify.org 2>/dev/null || true)
+    if echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+      PORT=$p; PTYPE=socks5-auth
+      echo "OK landing-port=$p type=socks5(auth) exit=$out"
+      return 0
+    fi
+    return 1
+  }
+
+  # 显式端口是部署契约；不可用时停止，避免静默切到另一条出口。
+  if [ -n "$SERVICES_PORT" ]; then
+    if ! probe_socks5_port "$SERVICES_PORT"; then
+      echo "ERROR configured-landing-unavailable port=$SERVICES_PORT"
+      exit 11
+    fi
+  fi
+  # 未配置端口时先试已知/常见端口，命中即跳过全端口扫描。
+  for p in 40010 40008 1080 1081 7890 8388 1088; do
+    [ -n "$PORT" ] && break
     [ -z "$p" ] && continue
-    out=$(curl -s -x "socks5h://${SERVICES_IP}:$p" --proxy-user "${SOCKS_USER:-}:${SOCKS_PASSWORD:-}" --connect-timeout 5 --max-time 10 https://api.ipify.org 2>/dev/null || true)
-    if echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then PORT=$p; PTYPE=socks5-auth; echo "OK landing-port=$p type=socks5(auth,fast) exit=$out"; break; fi
+    probe_socks5_port "$p" || true
   done
   OPEN=""
   if [ -z "$PORT" ]; then
@@ -214,10 +245,7 @@ if [ -n "${SERVICES_IP:-}" ]; then
   for p in $OPEN; do
     [ -n "$PORT" ] && break
     n=$((n+1)); [ "$n" -gt 20 ] && break
-    out=$(curl -s -x "socks5h://${SERVICES_IP}:$p" --proxy-user "${SOCKS_USER:-}:${SOCKS_PASSWORD:-}" --connect-timeout 6 --max-time 12 https://api.ipify.org 2>/dev/null || true)
-    if echo "$out" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then PORT=$p; PTYPE=socks5-auth; echo "OK landing-port=$p type=socks5(auth) exit=$out"; break; fi
-    outn=$(curl -s -x "socks5h://${SERVICES_IP}:$p" --connect-timeout 6 --max-time 12 https://api.ipify.org 2>/dev/null || true)
-    if echo "$outn" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then PORT=$p; PTYPE=socks5-noauth; echo "OK landing-port=$p type=socks5(no-auth) exit=$outn"; break; fi
+    probe_socks5_port "$p" && break
     outh=$(curl -s -x "http://${SERVICES_IP}:$p" --proxy-user "${SOCKS_USER:-}:${SOCKS_PASSWORD:-}" --connect-timeout 6 --max-time 12 https://api.ipify.org 2>/dev/null || true)
     if echo "$outh" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then echo "INFO port=$p 是 HTTP 代理(非 SOCKS5) exit=$outh"; fi
   done
@@ -561,11 +589,21 @@ fi
 
 if [ -n "$TRANSPORT_LEGACY_PATH" ]; then
   echo "STEP transport-legacy-canary"
-  if [ "$LEGACY_REMOTE_OK" = "1" ] || python3 "$REPO_ROOT/infra/scripts/smoke-vless.py" \
-    --url "wss://${HOST}${TRANSPORT_LEGACY_PATH}?ed=2560" \
-    --uuid "$TEST_UUID" \
-    --expect-status 0 \
-    --timeout 20 >/tmp/vless-legacy.log 2>&1; then
+  LEGACY_OK="$LEGACY_REMOTE_OK"
+  if [ "$LEGACY_OK" != "1" ]; then
+    for n in $(seq 1 3); do
+      if python3 "$REPO_ROOT/infra/scripts/smoke-vless.py" \
+        --url "wss://${HOST}${TRANSPORT_LEGACY_PATH}?ed=2560" \
+        --uuid "$TEST_UUID" \
+        --expect-status 0 \
+        --timeout 20 >/tmp/vless-legacy.log 2>&1; then
+        LEGACY_OK=1
+        break
+      fi
+      [ "$n" -lt 3 ] && sleep 4
+    done
+  fi
+  if [ "$LEGACY_OK" = "1" ]; then
     echo "OK transport-legacy-grace"
   else
     echo "ERROR transport-legacy-grace"
