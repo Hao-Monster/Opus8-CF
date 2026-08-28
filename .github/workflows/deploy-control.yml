@@ -59,6 +59,8 @@ jobs:
       SERVICES_USER: ${{ secrets.SOCKS_USER }}
       SERVICES_CODE: ${{ secrets.SOCKS_PASSWORD }}
       CLOUDFLARE_PROXY_PERMISSION_REF: ${{ secrets.CLOUDFLARE_PROXY_PERMISSION_REF }}
+      SUB_MAX_OPTIMIZED_IPS_PER_NODE: ${{ vars.SUB_MAX_OPTIMIZED_IPS_PER_NODE || '3' }}
+      CLASH_ALIAS_SUNSET: ${{ vars.CLASH_ALIAS_SUNSET || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020

@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import json
 import os
 import re
 import socket
 import ssl
 import struct
 import sys
+import time
 import uuid
 from urllib.parse import urlsplit
 
@@ -174,7 +176,13 @@ def main() -> int:
         default=200,
         help="Expected HTTP status; use 0 to accept any valid HTTP response.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable result including full probe latency.",
+    )
     args = parser.parse_args()
+    started = time.monotonic()
     try:
         run(
             args.url,
@@ -187,9 +195,20 @@ def main() -> int:
             args.connect_port,
         )
     except Exception as exc:
-        print(f"vless smoke failed: {exc}", file=sys.stderr)
+        elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+        if args.json:
+            print(
+                json.dumps({"ok": False, "elapsedMs": elapsed_ms, "error": str(exc)}),
+                file=sys.stderr,
+            )
+        else:
+            print(f"vless smoke failed: {exc}", file=sys.stderr)
         return 1
-    print("vless smoke ok")
+    elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+    if args.json:
+        print(json.dumps({"ok": True, "elapsedMs": elapsed_ms}))
+    else:
+        print("vless smoke ok")
     return 0
 
 

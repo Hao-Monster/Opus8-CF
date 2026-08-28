@@ -25,6 +25,40 @@ function subscriptions({ singboxHost = host, insecure = false } = {}) {
   const link = `vless://${uuid}@${address}:443?${query.toString()}#Opus8-test`;
   return {
     base64: Buffer.from(link, "utf8").toString("base64"),
+    xray: JSON.stringify([
+      {
+        remarks: "Opus8-test",
+        inbounds: [],
+        outbounds: [
+          {
+            tag: "proxy",
+            protocol: "vless",
+            settings: {
+              vnext: [
+                {
+                  address,
+                  port: 443,
+                  users: [{ id: uuid, encryption: "none" }],
+                },
+              ],
+            },
+            streamSettings: {
+              network: "ws",
+              security: "tls",
+              tlsSettings: {
+                serverName: host,
+                allowInsecure: false,
+                fingerprint: "chrome",
+              },
+              wsSettings: {
+                path: xrayPath,
+                headers: { Host: host },
+              },
+            },
+          },
+        ],
+      },
+    ]),
     mihomo: [
       "# Opus8-CF test subscription",
       "proxies:",
@@ -72,6 +106,7 @@ function subscriptions({ singboxHost = host, insecure = false } = {}) {
           },
         },
       ],
+      route: { final: "Opus8-test" },
     }),
   };
 }
@@ -79,11 +114,13 @@ function subscriptions({ singboxHost = host, insecure = false } = {}) {
 async function writeSubscriptions(directory, values) {
   const paths = {
     base64Path: join(directory, "subscription.txt"),
+    xrayPath: join(directory, "xray.json"),
     mihomoPath: join(directory, "subscription.yaml"),
     singboxPath: join(directory, "subscription.json"),
   };
   await Promise.all([
     writeFile(paths.base64Path, values.base64),
+    writeFile(paths.xrayPath, values.xray),
     writeFile(paths.mihomoPath, values.mihomo),
     writeFile(paths.singboxPath, values.singbox),
   ]);
@@ -106,6 +143,7 @@ try {
   });
   assert.equal(metadata.serverName, host);
   assert.equal(metadata.path, path);
+  assert.equal(metadata.nodeCount, 1);
   assert(!JSON.stringify(metadata).includes(uuid), "metadata must not contain the canary UUID");
 
   const xray = JSON.parse(await readFile(join(outputDir, "xray.json"), "utf8"));
@@ -122,7 +160,7 @@ try {
 
   const singbox = JSON.parse(await readFile(join(outputDir, "sing-box.json"), "utf8"));
   assert.equal(singbox.inbounds[0].type, "socks");
-  assert.equal(singbox.outbounds[0].tls.insecure, false);
+  assert.equal(singbox.outbounds.find((outbound) => outbound.type === "vless").tls.insecure, false);
   assert.equal(singbox.route.final, "Opus8-test");
 
   const mismatchDir = join(workDir, "mismatch");

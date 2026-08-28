@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "esbuild src/index.ts --bundle --format=esm --external:cloudflare:sockets --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --format=esm --external:cloudflare:sockets --loader:.yaml=text --outfile=dist/index.js",
     "test:cors": "node test/cors-test.mjs",
     "test:signature": "node test/signature-test.mjs",
     "test:integration-auth": "node test/integration-auth-test.mjs",
@@ -16,6 +16,9 @@
     "test:key-rotation": "node test/key-rotation-test.mjs",
     "test:d1-backup": "node test/d1-backup-crypto-test.mjs && node test/d1-export-data-test.mjs",
     "test:subscription-rate-limit": "node test/subscription-rate-limit-test.mjs",
+    "test:subscription": "node test/subscription-renderer-test.mjs",
+    "test:subscription-rules": "node test/subscription-rules-test.mjs",
+    "test:optimized-ip": "node test/optimized-ip-selection-test.mjs",
     "test:device-credentials": "node test/device-credentials-test.mjs",
     "test:usage-aggregation": "node test/usage-aggregation-test.mjs",
     "test:operations-hardening": "node test/operations-hardening-test.mjs",
@@ -33,6 +36,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@opus8-cf/shared": "workspace:*"
+    "@opus8-cf/shared": "workspace:*",
+    "yaml": "2.9.0"
   }
 }

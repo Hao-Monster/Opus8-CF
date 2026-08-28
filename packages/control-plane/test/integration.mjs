@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { parse as parseYaml } from "yaml";
 
 const base = process.env.OPUS8_TEST_BASE || "http://127.0.0.1:8787";
 const adminPassword = process.env.OPUS8_TEST_ADMIN || "test-admin";
@@ -1345,6 +1346,48 @@ try {
     `single-vantage optimized pool must be rejected: ${invalidPoolResponse.status}`,
   );
 
+  const malformedIpPoolResponse = await fetch(`${base}/api/optimized-ips`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      version: 3,
+      nodes: {
+        [nodeId]: {
+          hostname: nodeHost,
+          ips: ["999.999.999.999"],
+          validatedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          vantages: ["github-runner", "landing-vps"],
+        },
+      },
+    }),
+  });
+  assert(
+    malformedIpPoolResponse.status === 400,
+    `malformed optimized IPs must be rejected: ${malformedIpPoolResponse.status}`,
+  );
+
+  const overlongPoolResponse = await fetch(`${base}/api/optimized-ips`, {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({
+      version: 3,
+      nodes: {
+        [nodeId]: {
+          hostname: nodeHost,
+          ips: ["172.64.1.1"],
+          validatedAt: Date.now(),
+          expiresAt: Date.now() + 13 * 60 * 60_000,
+          vantages: ["github-runner", "landing-vps"],
+        },
+      },
+    }),
+  });
+  assert(
+    overlongPoolResponse.status === 400,
+    `optimized IP pools longer than 12 hours must be rejected: ${overlongPoolResponse.status}`,
+  );
+
   const mismatchedHostResponse = await fetch(`${base}/api/optimized-ips`, {
     method: "POST",
     headers: adminHeaders,
@@ -1466,25 +1509,64 @@ try {
       && base64Node.username !== userUuid,
     "new subscriptions must render the event-driven device credential instead of the user identity",
   );
-  const clashSubscription = await (
-    await fetch(`${created.subUrl}?format=clash`)
-  ).text();
+  const mihomoResponse = await fetch(`${created.subUrl}?format=mihomo`);
+  const mihomoSubscription = await mihomoResponse.text();
+  const mihomoConfig = parseYaml(mihomoSubscription);
+  const mihomoTransport = mihomoConfig.proxies?.[0]?.["ws-opts"];
   assert(
-    clashSubscription.includes(`path: "${transportPath}"`) &&
-      clashSubscription.includes("max-early-data: 2560") &&
-      !clashSubscription.includes(`path: "${transportPath}?ed=2560"`),
+    mihomoResponse.headers.get("x-opus8-subscription-format") === "mihomo" &&
+      mihomoTransport?.path === transportPath &&
+      mihomoTransport?.["max-early-data"] === 2560 &&
+      mihomoConfig["proxy-groups"].some(
+        (group) => group.name === "PROXY" && group.proxies.includes("Auto") && group.proxies.includes("Fallback"),
+      ),
     "Mihomo subscription must use a query-free registered path and explicit Early Data",
   );
-  const singboxSubscription = await (
-    await fetch(`${created.subUrl}?format=singbox`)
-  ).json();
-  const singboxTransport = singboxSubscription.outbounds?.[0]?.transport;
+  const clashAliasResponse = await fetch(`${created.subUrl}?format=clash`);
+  const clashAliasSubscription = await clashAliasResponse.text();
+  assert(
+    clashAliasResponse.headers.get("deprecation") === "true" &&
+      clashAliasResponse.headers.get("x-opus8-subscription-format") === "mihomo" &&
+      clashAliasSubscription === mihomoSubscription,
+    "legacy clash format must be an explicit deprecated alias of Mihomo",
+  );
+  const singboxResponse = await fetch(`${created.subUrl}?format=singbox`);
+  const singboxSubscription = await singboxResponse.json();
+  const singboxProxies = singboxSubscription.outbounds?.filter(
+    (outbound) => outbound.type === "vless",
+  ) || [];
+  const singboxTransport = singboxProxies[0]?.transport;
   assert(
     singboxTransport?.path === transportPath &&
       singboxTransport?.max_early_data === 2560 &&
       singboxTransport?.early_data_header_name ===
         "Sec-WebSocket-Protocol",
     "sing-box subscription must use the registered path and explicit Early Data",
+  );
+  const xrayResponse = await fetch(`${created.subUrl}?format=xray`);
+  const xraySubscription = await xrayResponse.json();
+  const base64NodeCount = base64Subscription.split(/\r?\n/).filter(Boolean).length;
+  assert(
+    Array.isArray(xraySubscription) &&
+      xraySubscription.length === base64NodeCount &&
+      mihomoConfig.proxies.length === base64NodeCount &&
+      singboxProxies.length === base64NodeCount &&
+      xraySubscription[0]?.outbounds?.[0]?.protocol === "vless",
+    "all subscription formats must expose the same canonical node set",
+  );
+  const invalidFormatResponse = await fetch(`${created.subUrl}?format=unknown`);
+  assert(
+    invalidFormatResponse.status === 400,
+    `unknown subscription format must fail closed: ${invalidFormatResponse.status}`,
+  );
+  const missingRuleResponse = await fetch(`${base}/rules/v1/mihomo/not_found.mrs`);
+  const invalidRuleMethodResponse = await fetch(
+    `${base}/rules/v1/mihomo/private_domain.mrs`,
+    { method: "POST" },
+  );
+  assert(
+    missingRuleResponse.status === 404 && invalidRuleMethodResponse.status === 405,
+    "versioned rule route must use an exact allowlist and reject unsupported methods",
   );
   assert(
     usageHeader.includes("upload=400"),

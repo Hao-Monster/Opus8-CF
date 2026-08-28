@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Low-frequency real-client acceptance for one healthy canary node.
-# Downloads pinned official cores, consumes all three subscription formats,
+# Downloads pinned official cores, compares all four subscription formats,
 # opens a real proxied HTTPS request with each core, then verifies usage.
 set -euo pipefail
 
@@ -110,8 +110,10 @@ download_client() {
     xray)
       release_dir="$WORK_DIR/xray-release"
       mkdir -p "$release_dir"
-      unzip -q "$archive" xray -d "$release_dir"
+      unzip -q "$archive" xray geoip.dat geosite.dat -d "$release_dir"
       install -m 0755 "$release_dir/xray" "$BIN_DIR/xray"
+      install -m 0644 "$release_dir/geoip.dat" "$BIN_DIR/geoip.dat"
+      install -m 0644 "$release_dir/geosite.dat" "$BIN_DIR/geosite.dat"
       binary="$BIN_DIR/xray"
       version_output="$("$binary" version 2>&1)"
       printf '%s\n' "$version_output" | grep -F "$version" >/dev/null
@@ -226,13 +228,16 @@ echo "STEP fetch-subscriptions"
 curl -fsS --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
   "$SUB_URL?format=base64" -o "$SUB_DIR/base64.txt"
 curl -fsS --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
-  "$SUB_URL?format=clash" -o "$SUB_DIR/mihomo.yaml"
+  "$SUB_URL?format=xray" -o "$SUB_DIR/xray.json"
+curl -fsS --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+  "$SUB_URL?format=mihomo" -o "$SUB_DIR/mihomo.yaml"
 curl -fsS --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
   "$SUB_URL?format=singbox" -o "$SUB_DIR/sing-box.json"
-echo "OK subscription-formats=base64,mihomo,sing-box"
+echo "OK subscription-formats=base64,xray,mihomo,sing-box"
 
 node infra/scripts/prepare-client-configs.mjs \
   --base64 "$SUB_DIR/base64.txt" \
+  --xray "$SUB_DIR/xray.json" \
   --mihomo "$SUB_DIR/mihomo.yaml" \
   --singbox "$SUB_DIR/sing-box.json" \
   --output-dir "$CONFIG_DIR"
@@ -244,7 +249,8 @@ BEFORE_UP="$(printf '%s' "$BEFORE_USER" | jq -er '.bytes_up')"
 BEFORE_DOWN="$(printf '%s' "$BEFORE_USER" | jq -er '.bytes_down')"
 
 echo "STEP validate-client-configs"
-"$BIN_DIR/xray" run -test -config "$CONFIG_DIR/xray.json" >/dev/null
+XRAY_LOCATION_ASSET="$BIN_DIR" \
+  "$BIN_DIR/xray" run -test -config "$CONFIG_DIR/xray.json" >/dev/null
 mkdir -p "$WORK_DIR/mihomo-home"
 "$BIN_DIR/mihomo" -t -d "$WORK_DIR/mihomo-home" \
   -f "$CONFIG_DIR/mihomo.yaml" >/dev/null
@@ -276,7 +282,8 @@ run_client() {
   echo "STEP real-client client=$client"
   case "$client" in
     xray)
-      "$BIN_DIR/xray" run -config "$CONFIG_DIR/xray.json" \
+      XRAY_LOCATION_ASSET="$BIN_DIR" \
+        "$BIN_DIR/xray" run -config "$CONFIG_DIR/xray.json" \
         >"$LOG_DIR/xray.log" 2>&1 &
       ;;
     mihomo)

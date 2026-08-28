@@ -38,6 +38,18 @@ export HMAC_V1_ACCEPT_UNTIL HMAC_V1_NODE_IDS
 echo "OK compliance-policy provisioning=$COMPLIANCE_PROXY_ALLOWED enforcement=$COMPLIANCE_ENFORCEMENT_MODE policy=$COMPLIANCE_POLICY_ID"
 cd packages/control-plane
 
+SUB_MAX_OPTIMIZED_IPS_PER_NODE="${SUB_MAX_OPTIMIZED_IPS_PER_NODE:-8}"
+CLASH_ALIAS_SUNSET="${CLASH_ALIAS_SUNSET:-}"
+if ! printf '%s' "$SUB_MAX_OPTIMIZED_IPS_PER_NODE" | grep -Eq '^[1-8]$'; then
+  echo "ERROR invalid-subscription-ip-limit"
+  exit 9
+fi
+if [ -n "$CLASH_ALIAS_SUNSET" ] \
+  && ! printf '%s' "$CLASH_ALIAS_SUNSET" | grep -Eq '^[A-Z][a-z]{2}, [0-9]{2} [A-Z][a-z]{2} [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$'; then
+  echo "ERROR invalid-clash-alias-sunset"
+  exit 9
+fi
+
 echo "STEP control-deploy-preflight"
 if ! node ../../infra/scripts/control-deploy-preflight.mjs >/tmp/control-deploy-preflight.log 2>&1; then
   echo "ERROR control-deploy-preflight"
@@ -177,6 +189,8 @@ workers_dev = true
 DEFAULT_UNLOCK_HOSTS = "$DEFAULT_UNLOCK_HOSTS"
 OPUS8_BUILD_ID = "$OPUS8_BUILD_ID"
 USE_OPTIMIZED_IPS = "1"
+SUB_MAX_OPTIMIZED_IPS_PER_NODE = "$SUB_MAX_OPTIMIZED_IPS_PER_NODE"
+CLASH_ALIAS_SUNSET = "$CLASH_ALIAS_SUNSET"
 ADMIN_UI_ORIGINS = "$ADMIN_UI_ORIGINS"
 HMAC_V1_ACCEPT_UNTIL = "$HMAC_V1_ACCEPT_UNTIL"
 HMAC_V1_NODE_IDS = "$HMAC_V1_NODE_IDS"
@@ -306,6 +320,18 @@ if ! node test/subscription-rate-limit-test.mjs >/tmp/sub-rate-test.log 2>&1; th
   echo "ERROR subscription-rate-limit-test"; tail -n 8 /tmp/sub-rate-test.log; exit 12
 fi
 echo "OK subscription-rate-limit-test"
+if ! node test/subscription-renderer-test.mjs >/tmp/subscription-renderer-test.log 2>&1; then
+  echo "ERROR subscription-renderer-test"; tail -n 8 /tmp/subscription-renderer-test.log; exit 12
+fi
+echo "OK subscription-renderer-test"
+if ! node test/subscription-rules-test.mjs >/tmp/subscription-rules-test.log 2>&1; then
+  echo "ERROR subscription-rules-test"; tail -n 8 /tmp/subscription-rules-test.log; exit 12
+fi
+echo "OK subscription-rules-test"
+if ! node test/optimized-ip-selection-test.mjs >/tmp/optimized-ip-selection-test.log 2>&1; then
+  echo "ERROR optimized-ip-selection-test"; tail -n 8 /tmp/optimized-ip-selection-test.log; exit 12
+fi
+echo "OK optimized-ip-selection-test"
 if ! node test/device-credentials-test.mjs >/tmp/device-credentials-test.log 2>&1; then
   echo "ERROR device-credentials-test"; tail -n 8 /tmp/device-credentials-test.log; exit 12
 fi
@@ -336,10 +362,25 @@ fi
 echo "OK supply-chain-test"
 
 echo "STEP bundle"
-if ! esbuild src/index.ts --bundle --format=esm --external:cloudflare:sockets --outfile=dist/index.js --alias:@opus8-cf/shared=../shared/src/index.ts >/tmp/bundle.log 2>&1; then
+if ! esbuild src/index.ts --bundle --format=esm --external:cloudflare:sockets --loader:.yaml=text --outfile=dist/index.js --alias:@opus8-cf/shared=../shared/src/index.ts >/tmp/bundle.log 2>&1; then
   echo "ERROR bundle-failed"; tail -n 5 /tmp/bundle.log; exit 12
 fi
 echo "OK bundled"
+echo "STEP subscription-rules"
+if ! node ../../infra/scripts/verify-subscription-rules.mjs >/tmp/subscription-rules.log 2>&1; then
+  echo "ERROR subscription-rule-verification"; tail -n 8 /tmp/subscription-rules.log; exit 12
+fi
+while IFS=$'\t' read -r rule_key rule_path rule_sha256; do
+  if ! wrangler kv key put "$rule_key" \
+    --path "../../infra/subscription-rules/v1/$rule_path" \
+    --binding KV --remote >/tmp/subscription-rule-upload.log 2>&1; then
+    echo "ERROR subscription-rule-upload path=$rule_path"
+    tail -n 5 /tmp/subscription-rule-upload.log
+    exit 12
+  fi
+  echo "OK subscription-rule-upload path=$rule_path sha256=$rule_sha256"
+done < <(node ../../infra/scripts/verify-subscription-rules.mjs --list)
+echo "OK subscription-rules-uploaded"
 if ! node test/compliance-runtime-local.mjs >/tmp/compliance-runtime-test.log 2>&1; then
   echo "ERROR compliance-runtime-test"; tail -n 12 /tmp/compliance-runtime-test.log; exit 12
 fi
@@ -350,6 +391,35 @@ fi
 echo "OK integration-runtime-test"
 
 echo "STEP deploy"
+PREVIOUS_VERSION_ID="$(wrangler deployments list --name opus8cf-control --json \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s);process.stdout.write(String(x?.[0]?.versions?.[0]?.version_id||""))}catch{}})')"
+if [ -z "$PREVIOUS_VERSION_ID" ]; then
+  echo "ERROR previous-worker-version-unavailable"
+  exit 13
+fi
+DEPLOYED_NEW_VERSION=0
+RELEASE_VERIFIED=0
+rollback_unverified_release() {
+  local exit_code=$?
+  trap - EXIT
+  if [ "$exit_code" -ne 0 ] \
+    && [ "$DEPLOYED_NEW_VERSION" = "1" ] \
+    && [ "$RELEASE_VERIFIED" != "1" ]; then
+    echo "STEP automatic-rollback previousVersion=$PREVIOUS_VERSION_ID"
+    if wrangler rollback "$PREVIOUS_VERSION_ID" --name opus8cf-control \
+      --message "Automatic rollback after failed Opus8 subscription smoke" \
+      --yes >/tmp/automatic-rollback.log 2>&1; then
+      echo "OK automatic-rollback"
+    else
+      echo "ERROR automatic-rollback-failed"
+      tail -n 8 /tmp/automatic-rollback.log \
+        | sed 's/[A-Za-z0-9_-]\{24,\}/<redacted>/g'
+    fi
+  fi
+  exit "$exit_code"
+}
+trap rollback_unverified_release EXIT
+DEPLOYED_NEW_VERSION=1
 if ! wrangler deploy >/tmp/wd.log 2>&1; then
   echo "ERROR deploy-failed"; tail -n 6 /tmp/wd.log | sed 's/[A-Za-z0-9_-]\{24,\}/<redacted>/g'; exit 13
 fi
@@ -452,6 +522,18 @@ for n in $(seq 1 24); do
 done
 if [ "$CUSTOM_OK" != "1" ]; then echo "ERROR custom-domain-unreachable"; exit 15; fi
 echo "OK custom-domain-ready api=$API_URL sub=$SUB_URL"
+
+echo "STEP smoke-subscription-rules"
+while IFS=$'\t' read -r _rule_key rule_path rule_sha256; do
+  if ! curl -fsS --max-time 30 \
+    "$SUB_URL/rules/v1/$rule_path" -o /tmp/subscription-rule-smoke.bin \
+    || ! printf '%s  %s\n' "$rule_sha256" /tmp/subscription-rule-smoke.bin \
+      | sha256sum -c - >/dev/null; then
+    echo "ERROR smoke-subscription-rule path=$rule_path"
+    exit 15
+  fi
+done < <(node ../../infra/scripts/verify-subscription-rules.mjs --list)
+echo "OK smoke-subscription-rules"
 
 echo "STEP smoke"
 if curl -fsS --max-time 15 "$API_URL/health" | grep -q '"ok":true'; then echo "OK smoke-health"; else echo "ERROR smoke-health"; exit 15; fi
@@ -667,6 +749,7 @@ if [ "$COMPLIANCE_PROXY_ALLOWED" != "1" ]; then
     exit 21
   fi
   echo "OK smoke-compliance-provisioning-block"
+  RELEASE_VERIFIED=1
   echo "DONE url=$API_URL"
   exit 0
 fi
@@ -858,8 +941,15 @@ else
   echo "ERROR smoke-user-activity"; exit 25
 fi
 
-SUBBODY=$(curl -fsS -D /tmp/sub.headers --max-time 20 "$SUB")
-if [ -n "$SUBBODY" ]; then echo "OK smoke-subscription"; else echo "ERROR smoke-subscription"; exit 22; fi
+if curl -fsS -D /tmp/sub.headers --max-time 20 "$SUB" -o /tmp/sub-base64.txt \
+  && curl -fsS -D /tmp/sub-xray.headers --max-time 20 "$SUB?format=xray" -o /tmp/sub-xray.json \
+  && curl -fsS -D /tmp/sub-mihomo.headers --max-time 20 "$SUB?format=mihomo" -o /tmp/sub-mihomo.yaml \
+  && curl -fsS -D /tmp/sub-singbox.headers --max-time 20 "$SUB?format=singbox" -o /tmp/sub-singbox.json; then
+  echo "OK smoke-subscription-formats"
+else
+  echo "ERROR smoke-subscription-formats"; exit 22
+fi
+SUBBODY=$(cat /tmp/sub-base64.txt)
 if grep -qi '^cache-control:.*private.*no-store' /tmp/sub.headers \
   && grep -qi '^x-opus8-subscription-protection:[[:space:]]*device-token-v1' /tmp/sub.headers; then
   echo "OK smoke-subscription-rate-limit-binding"
@@ -872,6 +962,27 @@ else
   echo "ERROR smoke-subscription-usage"; exit 24
 fi
 if printf '%s' "$SUBBODY" | base64 -d 2>/dev/null | grep -q 'vless://'; then echo "OK smoke-sub-has-node"; else echo "ERROR smoke-sub-no-node"; exit 23; fi
+if node ../../infra/scripts/prepare-client-configs.mjs \
+  --base64 /tmp/sub-base64.txt \
+  --xray /tmp/sub-xray.json \
+  --mihomo /tmp/sub-mihomo.yaml \
+  --singbox /tmp/sub-singbox.json \
+  --output-dir /tmp/subscription-config-smoke >/tmp/subscription-config-smoke.log 2>&1; then
+  echo "OK smoke-subscription-format-equivalence"
+else
+  echo "ERROR smoke-subscription-format-equivalence"
+  tail -n 8 /tmp/subscription-config-smoke.log
+  exit 23
+fi
+if curl -fsS -D /tmp/sub-clash-alias.headers --max-time 20 \
+  "$SUB?format=clash" -o /tmp/sub-clash-alias.yaml \
+  && grep -qi '^deprecation:[[:space:]]*true' /tmp/sub-clash-alias.headers \
+  && grep -qi '^x-opus8-subscription-format:[[:space:]]*mihomo' /tmp/sub-clash-alias.headers \
+  && cmp -s /tmp/sub-mihomo.yaml /tmp/sub-clash-alias.yaml; then
+  echo "OK smoke-clash-deprecated-alias"
+else
+  echo "ERROR smoke-clash-deprecated-alias"; exit 23
+fi
 printf '%s' "$SUBBODY" > /tmp/sub.body
 curl -fsS --max-time 20 "$API_URL/api/optimized-ips" \
   -H "authorization: Bearer $TOK" > /tmp/optimized-ips.json
@@ -913,4 +1024,5 @@ fi
 if curl -fsS --max-time 15 -X DELETE "$API_URL/api/users/$SUID" -H "authorization: Bearer $TOK" | grep -q '"ok":true'; then echo "OK smoke-user-cleanup"; else echo "ERROR smoke-user-cleanup"; exit 25; fi
 if curl -fsS --max-time 15 -X DELETE "$API_URL/api/nodes/smoke-node" -H "authorization: Bearer $TOK" | grep -q '"ok":true'; then echo "OK smoke-node-cleanup"; else echo "ERROR smoke-node-cleanup"; exit 25; fi
 
+RELEASE_VERIFIED=1
 echo "DONE url=$API_URL"

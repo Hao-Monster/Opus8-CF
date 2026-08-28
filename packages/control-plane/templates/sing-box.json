@@ -1,0 +1,129 @@
+{
+  "log": {
+    "level": "warn",
+    "disabled": false,
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "udp",
+        "tag": "dns_local",
+        "server": "223.5.5.5"
+      },
+      {
+        "type": "tls",
+        "tag": "dns_remote",
+        "server": "8.8.8.8",
+        "detour": "PROXY"
+      },
+      {
+        "type": "fakeip",
+        "tag": "dns_fakeip",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": ["private_domain", "cn_domain"],
+        "action": "route",
+        "server": "dns_local"
+      },
+      {
+        "query_type": ["A", "AAAA"],
+        "action": "route",
+        "server": "dns_fakeip"
+      }
+    ],
+    "final": "dns_remote"
+  },
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "port": 53,
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["private_domain", "cn_domain", "cn_ip"],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": ["geolocation_not_cn"],
+        "action": "route",
+        "outbound": "PROXY"
+      }
+    ],
+    "rule_set": [],
+    "final": "PROXY",
+    "default_domain_resolver": "dns_local",
+    "auto_detect_interface": true
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "tun125",
+      "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+      "mtu": 9000,
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "mixed",
+      "endpoint_independent_nat": true
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 2412,
+      "users": []
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "PROXY",
+      "outbounds": [],
+      "interrupt_exist_connections": true
+    },
+    {
+      "type": "urltest",
+      "tag": "Auto",
+      "outbounds": [],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 80,
+      "idle_timeout": "30m",
+      "interrupt_exist_connections": true
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "default_mode": "rule"
+    },
+    "cache_file": {
+      "enabled": true,
+      "path": "opus8.db",
+      "cache_id": "opus8",
+      "store_fakeip": true
+    }
+  }
+}
