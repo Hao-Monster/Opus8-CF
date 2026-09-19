@@ -8,15 +8,7 @@
     "OK login",
     "STEP eligible-nodes",
     "OK eligible-nodes count=4",
-    "STEP create-isolated-probe-user",
-    "OK probe-user-created",
-    "STEP verify-domain-baseline",
-    "OK domain-baseline node=acc1-n1 vantages=2",
-    "OK domain-baseline node=acc1-n2 vantages=2",
-    "OK domain-baseline node=acc2-n1 vantages=2",
-    "OK domain-baseline node=acc2-n2 vantages=2",
-    "STEP discover-cfst-candidates",
-    "ERROR cloudflare-ip-ranges-download"
+    "STEP create-isolated-probe-user"
   ],
-  "finishedAt": "2026-09-19T12:31:34Z"
+  "finishedAt": "2026-09-19T18:38:00Z"
 }
